@@ -3,117 +3,136 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Lattice · a whiteboard that can't conflict</title>
-<meta name="description" content="A real-time collaborative whiteboard built from scratch on the CRDT paper. Edit offline, at the same time, in any order: every copy ends up the same.">
-<meta property="og:title" content="Lattice · a whiteboard that can't conflict">
-<meta property="og:description" content="Real-time collaboration built from scratch on Conflict-free Replicated Data Types (Shapiro et al., 2011). No CRDT library.">
+<title>Lattice · draw together, even offline</title>
+<meta name="description" content="A shared whiteboard with pen, sticky notes, text and images. Everyone's copy merges into the same board, in any order, even after editing offline. Built from scratch on CRDTs.">
+<meta name="theme-color" content="#f8fafb">
+<meta property="og:title" content="Lattice · draw together, even offline">
+<meta property="og:description" content="A real-time whiteboard built from scratch on Conflict-free Replicated Data Types (Shapiro et al., 2011). No CRDT library.">
 <meta property="og:image" content="https://quasarboard.vercel.app/og.png">
 <meta property="og:url" content="https://quasarboard.vercel.app">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shantell+Sans:ital,wght,BNCE,INFM@0,300..800,-100..100,0..100&family=Schibsted+Grotesk:wght@400..800&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/board.css">
 <link rel="stylesheet" href="/site.css">
 </head>
-<body class="site grain">
+<body class="site">
 <header class="nav">
   <a class="brand" href="/" aria-label="Lattice home">
-    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 4 28 16 16 28 4 16Z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M10 10 22 22M22 10 10 22" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="16" cy="4" r="2.6" fill="var(--accent)"/></svg>
+    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6.5 20.5c3-5.5 6.2-9.9 9.6-13.2M10 25.5c4.3-7 8.6-12.3 13-16M16.5 25.5c2.6-4 5.2-7.3 8-9.8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><circle cx="25.5" cy="7" r="2.6" fill="var(--red)"/></svg>
     <span>Lattice</span>
   </a>
   <nav class="nav-links" aria-label="Main">
-    <a href="/lab">The lab</a>
+    <a href="#merge">How it merges</a>
+    <a href="/lab">Break it</a>
     <a href="https://github.com/quasaritis/lattice">Code</a>
-    <button class="btn primary small js-new-board" type="button">Start a board</button>
+    <a href="/boards">Your boards</a>
   </nav>
+  <div class="nav-actions">
+    <div id="account"></div>
+    <button class="btn primary small js-new-board" type="button">New board</button>
+  </div>
 </header>
 
 <main>
   <section class="hero">
     <div class="hero-copy">
-      <h1>Two people. One note. Zero&nbsp;conflicts.</h1>
-      <p class="lede">Lattice is a whiteboard where edits made at the same time, offline, in any order, always merge into the same board for everyone. No server deciding who wins. No “someone else changed this file”.</p>
+      <h1>
+        <span class="line">Draw together.</span>
+        <span class="line hl-wrap">Even offline.<svg class="hl-stroke" viewBox="0 0 400 60" preserveAspectRatio="none" aria-hidden="true"><path pathLength="1" d="M6 38c60-6 140-10 210-8s120 6 178 2"/></svg></span>
+      </h1>
+      <p class="lede">A shared whiteboard with a pen, sticky notes, text and images. Lose the Wi‑Fi, keep drawing, come back: everyone's copy merges into the same board, and nobody's work gets thrown away.</p>
       <div class="actions">
         <button class="btn primary js-new-board" type="button">Start a board</button>
-        <a class="btn" href="/lab">Break the network yourself</a>
+        <a class="btn ghost" href="/boards">Your boards</a>
       </div>
-      <p class="paper-credit">Built from scratch on <a href="https://inria.hal.science/inria-00609399">Conflict-free Replicated Data Types</a> by Shapiro, Preguiça, Baquero and Zawirski (SSS 2011). No CRDT library, no Firebase.</p>
+      <p class="hint hand">
+        <svg class="hint-arrow" viewBox="0 0 120 70" aria-hidden="true"><path pathLength="1" d="M6 52c26 8 58 6 82-12s20-30 22-34"/><path pathLength="1" d="M96 12l14-8 4 16"/></svg>
+        Those two boards are live. Draw on either one.
+      </p>
       <p class="new-error" id="newError" role="alert" hidden></p>
     </div>
-    <div class="hero-demo">
-      <div id="heroLab"></div>
-      <p class="demo-hint">This is running live in your browser. Type in either box, cut the network, and reconnect.</p>
+    <div class="hero-demo" id="heroDemo"></div>
+  </section>
+
+  <section class="tray" aria-labelledby="trayTitle">
+    <div class="tray-copy">
+      <h2 id="trayTitle">Everything on the tray.</h2>
+      <p>Pen with real pressure on a stylus, a highlighter that never covers your writing, arrows, an eraser, sticky notes, text, boxes and photos. Paste a screenshot straight in.</p>
+    </div>
+    <div class="tray-board" id="trayBoard" role="img" aria-label="A board with sticky notes, pen drawings, a highlighted line, an arrow and a pasted screenshot"></div>
+  </section>
+
+  <section class="merge" id="merge" aria-labelledby="mergeTitle">
+    <h2 id="mergeTitle">When two people change the same thing.</h2>
+    <div class="merge-grid">
+      <ol class="steps">
+        <li class="step" data-step="0">
+          <h3>Asha deletes a note while Rohan rewrites it.</h3>
+          <p>Deleting only removes the versions you've seen. Rohan's edit re-stamps the note with a tag Asha never saw, so it survives on both screens.</p>
+          <p class="crdt"><b>OR-Set</b>, observed-remove set</p>
+        </li>
+        <li class="step" data-step="1">
+          <h3>Both drag the same note, in opposite directions.</h3>
+          <p>Every position carries a hybrid logical clock. Both devices pick the later move without asking a server, so they land in the same place.</p>
+          <p class="crdt"><b>LWW register</b>, last writer wins</p>
+        </li>
+        <li class="step" data-step="2">
+          <h3>Both type at the end of the same sentence.</h3>
+          <p>Each letter remembers which letter it was typed after. Deleted letters stay behind as invisible anchors, so words stay whole instead of mixing letter by letter.</p>
+          <p class="crdt"><b>RGA</b>, replicated growable array</p>
+        </li>
+      </ol>
+      <div class="stage"><div class="stage-sticky" id="stage"></div></div>
     </div>
   </section>
 
-  <section class="types" aria-labelledby="typesTitle">
-    <h2 id="typesTitle">Three data types from the paper do all the work.</h2>
-    <dl class="type-list">
-      <div class="type-row">
-        <dt><span class="ink" style="--c: var(--sun)">OR-Set</span><span class="type-sub">Observed-Remove Set</span></dt>
-        <dd><p>Which notes exist. Deleting a note removes only the copies you have seen, so if a friend edits it while you delete it offline, their version survives instead of silently vanishing.</p></dd>
-      </div>
-      <div class="type-row">
-        <dt><span class="ink" style="--c: var(--sky)">LWW-Map</span><span class="type-sub">Last-Writer-Wins registers</span></dt>
-        <dd><p>Position, size and colour. Each value carries a hybrid logical clock timestamp, so two people dragging the same note agree on where it ends up without asking a server.</p></dd>
-      </div>
-      <div class="type-row">
-        <dt><span class="ink" style="--c: var(--rose)">RGA</span><span class="type-sub">Replicated Growable Array</span></dt>
-        <dd><p>The text inside notes. Every character has a unique id and remembers what it was typed after. Deleted characters stay as invisible anchors, so two people typing in the same sentence never scramble each other's words.</p></dd>
-      </div>
-    </dl>
+  <section class="paper" aria-labelledby="paperTitle">
+    <div class="paper-copy">
+      <h2 id="paperTitle">Built from the paper, not a library.</h2>
+      <p>Lattice implements the data types from <a href="https://inria.hal.science/inria-00609399">Conflict-free Replicated Data Types</a> by Shapiro, Preguiça, Baquero and Zawirski (2011) from scratch, in about two thousand lines of TypeScript with no runtime dependencies. The paper proves that copies which have seen the same changes are identical. The test suite tries to prove it wrong.</p>
+      <p>It runs thousands of random editing sessions over a simulated network that delays, reorders, drops, duplicates and splits messages, then checks every copy matches. Those runs caught two real bugs before launch.</p>
+      <a class="btn" href="/lab">Break the network yourself</a>
+    </div>
+    <pre class="term" aria-label="Test run output"><code id="termOut"></code></pre>
   </section>
 
-  <section class="proof" aria-labelledby="proofTitle">
-    <div class="proof-head">
-      <h2 id="proofTitle">It's tested like a theorem, not a demo.</h2>
-      <p>The paper proves that if every replica eventually gets every change, they all end up identical. The test suite tries to prove it wrong: thousands of random editing sessions over a network that delays, reorders, loses, duplicates and splits messages.</p>
-    </div>
-    <div class="proof-figures">
-      <p><b class="fig">3,000</b><span>random network schedules per property, every one reproducible from its seed</span></p>
-      <p><b class="fig">19</b><span>tests, including merge laws: commutative, associative, idempotent</span></p>
-      <p><b class="fig">0</b><span>runtime dependencies. The CRDTs, clock and Realtime client are all hand-written TypeScript</span></p>
-    </div>
-    <pre class="code" aria-label="One of the property tests"><code><span class="c">// test/properties.test.ts</span>
-<span class="k">for</span> (const seed of seeds()) {
-  const net = new SimNetwork(n, rng(seed), { drop, duplicate, maxLatency });
-  <span class="c">// random edits on random replicas, random partitions…</span>
-  net.heal(); net.drain();
-  assert.ok(net.converged(), `seed ${seed}: replicas diverged`);
-}</code></pre>
-  </section>
-
-  <section class="arch" aria-labelledby="archTitle">
-    <h2 id="archTitle">How a keystroke travels</h2>
-    <figure class="arch-figure">
-      <svg viewBox="0 0 860 300" role="img" aria-labelledby="archDesc">
-        <desc id="archDesc">Each browser keeps a full replica. Edits go to other browsers over Supabase Realtime broadcast within milliseconds, and to a Postgres op log that every browser pulls from to fill any gaps. Snapshots compact the log.</desc>
-        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#17191c"/></marker></defs>
-        <g class="arch-box"><rect x="20" y="40" width="200" height="96" rx="10" fill="var(--sun)"/><text x="40" y="78" class="t1">Browser A</text><text x="40" y="104" class="t2">full replica · HLC clock</text><text x="40" y="122" class="t2">works offline</text></g>
-        <g class="arch-box"><rect x="640" y="40" width="200" height="96" rx="10" fill="var(--sky)"/><text x="660" y="78" class="t1">Browser B</text><text x="660" y="104" class="t2">full replica · HLC clock</text><text x="660" y="122" class="t2">works offline</text></g>
-        <g class="arch-box"><rect x="300" y="20" width="260" height="62" rx="31" fill="var(--paper-hi)"/><text x="430" y="48" class="t1" text-anchor="middle">Realtime broadcast</text><text x="430" y="68" class="t2" text-anchor="middle">~50 ms · best effort</text></g>
-        <g class="arch-box"><rect x="300" y="196" width="260" height="84" rx="10" fill="var(--rose)"/><text x="430" y="228" class="t1" text-anchor="middle">Postgres op log</text><text x="430" y="250" class="t2" text-anchor="middle">append-only · de-duplicated</text><text x="430" y="268" class="t2" text-anchor="middle">+ snapshots every 300 ops</text></g>
-        <path d="M220 70 H300" class="wire" marker-end="url(#ah)"/><path d="M560 50 H640" class="wire" marker-end="url(#ah)"/>
-        <path d="M640 92 H560 M300 92 H220" class="wire faint"/>
-        <path d="M120 136 V238 H300" class="wire" marker-end="url(#ah)"/><path d="M560 238 H740 V136" class="wire" marker-end="url(#ah)"/>
-        <text x="132" y="190" class="t3">push every op</text><text x="728" y="190" class="t3" text-anchor="end">pull what you missed</text>
+  <section class="flow" aria-labelledby="flowTitle">
+    <h2 id="flowTitle">How a stroke reaches everyone.</h2>
+    <figure class="flow-figure">
+      <svg viewBox="0 0 980 360" role="img" aria-labelledby="flowDesc" id="flowSvg">
+        <desc id="flowDesc">Each browser keeps a full copy of the board. A stroke goes to other browsers over a realtime channel within milliseconds, and to a Postgres log that every browser pulls from to fill any gaps. The server stores and forwards; it never decides who wins.</desc>
+        <g class="fl-box"><path pathLength="1" d="M28 70c2-14 6-18 20-19 60-3 120-2 178 1 12 1 16 5 17 18 2 34 1 66-1 98-1 12-5 16-18 17-58 3-118 3-176 0-13-1-18-5-19-18-2-32-3-64-1-97z"/><text x="60" y="108" class="fl-t1">Asha's laptop</text><text x="60" y="138" class="fl-t2">full copy of the board</text><text x="60" y="162" class="fl-t2">keeps working offline</text></g>
+        <g class="fl-box"><path pathLength="1" d="M738 70c2-14 6-18 20-19 60-3 120-2 178 1 12 1 16 5 17 18 2 34 1 66-1 98-1 12-5 16-18 17-58 3-118 3-176 0-13-1-18-5-19-18-2-32-3-64-1-97z"/><text x="770" y="108" class="fl-t1">Rohan's phone</text><text x="770" y="138" class="fl-t2">full copy of the board</text><text x="770" y="162" class="fl-t2">keeps working offline</text></g>
+        <g class="fl-box"><path pathLength="1" d="M352 40c40-8 236-9 278 0 14 3 18 10 17 24-1 18-4 26-18 28-60 6-216 6-276 0-14-2-18-10-18-26 0-16 4-23 17-26z"/><text x="490" y="74" class="fl-t1" text-anchor="middle">Realtime channel</text></g>
+        <g class="fl-box"><path pathLength="1" d="M352 248c40-8 236-9 278 0 14 3 18 10 18 30 0 30-3 46-18 50-60 7-218 7-278 0-14-3-17-18-17-48 0-20 3-29 17-32z"/><text x="490" y="283" class="fl-t1" text-anchor="middle">Postgres op log</text><text x="490" y="309" class="fl-t2" text-anchor="middle">stores and forwards, never merges</text></g>
+        <path class="fl-arrow" pathLength="1" d="M246 104c34-18 66-32 102-38m-12-10 14 9-10 12"/>
+        <path class="fl-arrow" pathLength="1" d="M650 66c32 6 62 18 86 36m-1-15 3 17-16 2"/>
+        <path class="fl-arrow" pathLength="1" d="M140 190c6 60 70 92 206 96m-14-11 16 11-14 10"/>
+        <path class="fl-arrow" pathLength="1" d="M650 290c120-4 186-36 196-100m-12 10 12-12 10 13"/>
+        <text x="170" y="250" class="fl-t3">every stroke, saved</text>
+        <text x="770" y="258" class="fl-t3">anything missed, pulled</text>
+        <text x="490" y="138" class="fl-t3" text-anchor="middle">~50 ms, best effort</text>
       </svg>
-      <figcaption>The server never merges anything. It's a reliable mailbox; all conflict resolution happens in the browsers, which is the point of CRDTs.</figcaption>
     </figure>
   </section>
 
-  <section class="cta">
-    <h2>Make a board and send the link to a friend.</h2>
-    <p>Then both of you turn off Wi-Fi, edit the same note, and turn it back on.</p>
+  <section class="close">
+    <h2>Grab a marker.</h2>
+    <p>Make a board, send the link to a friend, and both turn off the Wi‑Fi for a minute.</p>
     <button class="btn primary js-new-board" type="button">Start a board</button>
   </section>
 </main>
 
 <footer class="foot">
-  <p>Lattice · <a href="https://github.com/quasaritis/lattice">github.com/quasaritis/lattice</a> · built with TypeScript, Supabase and Vercel</p>
-  <p class="cite">Shapiro, M., Preguiça, N., Baquero, C., Zawirski, M. <i>Conflict-free Replicated Data Types.</i> SSS 2011, LNCS 6976, pp. 386–400. Springer.</p>
+  <p class="foot-mark" aria-hidden="true">Lattice</p>
+  <div class="foot-row">
+    <p>Made by <a href="https://github.com/quasaritis">quasaritis</a> · <a href="https://github.com/quasaritis/lattice">Source on GitHub</a> · TypeScript, Supabase, Vercel</p>
+    <p class="cite">Shapiro, M., Preguiça, N., Baquero, C., Zawirski, M. <i>Conflict-free Replicated Data Types.</i> SSS 2011, LNCS 6976, pp. 386–400.</p>
+  </div>
 </footer>
 
 <script type="module" src="/js/app/landing.js"></script>

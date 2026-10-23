@@ -5,7 +5,8 @@
  */
 import { SimNetwork, type NetworkOptions } from "../lab/network.js";
 import { COLORS, int, newItemId, pick, rng } from "../lab/random.js";
-import { INKS, cpToUtf16, el, renderFingerprint, utf16ToCp } from "./ui.js";
+import { paperHex } from "./palette.js";
+import { cpToUtf16, el, renderFingerprint, utf16ToCp } from "./ui.js";
 
 export interface LabOptions {
   labels: string[];
@@ -198,7 +199,7 @@ export class LabView {
       if (this.net.partitioned) this.heal();
       else this.cutAll();
     });
-    const chaosBtn = el("button", "btn small quiet", "Throw 30 random edits at the shapes");
+    const chaosBtn = el("button", "btn small ghost", "Throw 30 random edits at the shapes");
     chaosBtn.type = "button";
     chaosBtn.addEventListener("click", () => {
       this.stopAutoplay();
@@ -280,7 +281,7 @@ export class LabView {
     );
     const isolate = el("div", "lab-isolate");
     this.net.replicas.forEach((d, i) => {
-      const b = el("button", "btn small quiet", `Isolate ${d.replica}`);
+      const b = el("button", "btn small ghost", `Isolate ${d.replica}`);
       b.type = "button";
       b.addEventListener("click", () => {
         this.net.heal();
@@ -335,7 +336,7 @@ export class LabView {
       chip.className = `lab-chip ${kind}${chip.classList.contains("arrive") ? " arrive" : ""}`;
       chip.style.left = `${Math.max(0, Math.min(92, (x / 1000) * 100))}%`;
       chip.style.top = `${Math.max(0, Math.min(80, (y / 600) * 100))}%`;
-      chip.style.background = (INKS[String(d.prop(id, "color") ?? "sun")] ?? INKS.sun).fill;
+      chip.style.background = kind === "ink" ? "var(--ink)" : paperHex(d.prop(id, "color"));
       chip.title = d.text(id) || kind;
     }
     renderFingerprint(p.fpSw, p.fpTx, d.hash());

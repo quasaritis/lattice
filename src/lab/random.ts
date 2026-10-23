@@ -1,5 +1,6 @@
 /** Seeded randomness and random editing, shared by the test suite and the in-browser lab. */
 import type { Doc, Op } from "../crdt/doc.js";
+import { BRUSH_SIZE, encodeStroke, type Brush, type Pt } from "../draw/stroke.js";
 
 export type Rng = () => number;
 
@@ -35,6 +36,7 @@ export function newItemId(r?: Rng): string {
 export function randomEdit(doc: Doc, r: Rng): Op[] {
   const items = doc.itemIds();
   const roll = r();
+  if (roll < 0.05) return randomStroke(doc, r);
   if (!items.length || roll < 0.12) {
     return doc.createItem(newItemId(r), { kind: pick(r, ["note", "rect", "ellipse"]), x: int(r, 0, 900), y: int(r, 0, 500), w: 180, h: 140, color: pick(r, COLORS), z: int(r, 0, 100) }, r() < 0.5 ? pick(r, WORDS) : "");
   }
@@ -54,4 +56,20 @@ export function randomEdit(doc: Doc, r: Rng): Op[] {
     cur.splice(Math.min(at, cur.length - 1), int(r, 1, 3), ...Array.from(pick(r, WORDS)));
   }
   return doc.editText(item, cur.join(""));
+}
+
+export const INK_COLORS = ["ink", "blue", "red", "green", "orange", "violet"] as const;
+
+/** A random scribble, encoded exactly like a real pen stroke. */
+export function randomStroke(doc: Doc, r: Rng): Op[] {
+  const brush = pick(r, ["pen", "marker", "hl"] as Brush[]);
+  const pts: Pt[] = [];
+  let x = int(r, 0, 900), y = int(r, 0, 500);
+  for (let i = 0, n = int(r, 1, 60); i < n; i++) {
+    x += r() * 16 - 8;
+    y += r() * 16 - 8;
+    pts.push({ x, y, p: r() });
+  }
+  const s = encodeStroke(pts, BRUSH_SIZE[brush] / 2 + 2);
+  return doc.createItem(newItemId(r), { kind: "ink", brush, color: pick(r, INK_COLORS), x: s.x, y: s.y, w: s.w, h: s.h, d: s.d, z: int(r, 0, 100) });
 }

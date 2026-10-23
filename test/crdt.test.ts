@@ -5,7 +5,8 @@ import { HLC, compare, parse } from "../src/crdt/hlc.js";
 import { LWWMap } from "../src/crdt/lww.js";
 import { ORSet } from "../src/crdt/orset.js";
 import { RGA, ROOT } from "../src/crdt/rga.js";
-import { Doc, isOp } from "../src/crdt/doc.js";
+import { Doc, isFieldValue, isOp } from "../src/crdt/doc.js";
+import { decodeStroke, encodeStroke, outlinePath } from "../src/draw/stroke.js";
 
 // ------------------------------------------------------------------ HLC
 
@@ -198,4 +199,58 @@ test("Doc: hostile ops are rejected or dropped without breaking the replica", ()
   a.applyRemote([{ k: "ins", id: T(2, "z"), item: "n", after: T(5), text: "b" }]);
   assert.equal(a.text("n"), "a");
   assert.equal(a.rejected.length, 1);
+});
+
+// ------------------------------------------------------------------ strokes, images, undo
+
+
+test("Strokes: encode → decode keeps the shape to half a pixel, and validates as a field", () => {
+  const pts = Array.from({ length: 200 }, (_, i) => ({ x: 100 + Math.cos(i / 15) * 80, y: 300 + Math.sin(i / 9) * 40, p: (i % 10) / 9 }));
+  const s = encodeStroke(pts, 4);
+  assert.ok(isFieldValue("d", s.d), s.d.slice(0, 80));
+  const back = decodeStroke(s.d)!;
+  assert.equal(back.w, s.w);
+  for (const q of back.pts) {
+    const nearest = Math.min(...pts.map((p) => Math.hypot(p.x - (q.x + s.x), p.y - (q.y + s.y))));
+    assert.ok(nearest <= 0.75, `point drifted ${nearest}`);
+  }
+  assert.ok(outlinePath(back.pts, 3, true).startsWith("M"));
+});
+
+test("Fields: images only point at board storage paths, strokes only carry numbers", () => {
+  assert.equal(isFieldValue("src", "6515f0ca-a450-4878-891e-61bebecc0957/k3j2h1g9.webp"), true);
+  assert.equal(isFieldValue("src", "https://evil.example/x.png"), false);
+  assert.equal(isFieldValue("src", "../../etc/passwd"), false);
+  assert.equal(isFieldValue("d", "10,10:0,0,5;<script>"), false);
+  assert.equal(isFieldValue("kind", "iframe"), false);
+  assert.equal(isFieldValue("color", "url(javascript:x)"), false);
+  assert.equal(isFieldValue("brush", "hl"), true);
+});
+
+test("Undo of a delete brings the item back with its props and text", () => {
+  const a = new Doc("a", () => 1000);
+  const b = new Doc("b", () => 1000);
+  b.applyRemote(a.createItem("n", { kind: "note", color: "mint", x: 40 }, "keep me"));
+  b.applyRemote(a.deleteItem("n"));
+  assert.equal(b.hasItem("n"), false);
+  b.applyRemote(a.restoreItem("n"));
+  assert.equal(b.hasItem("n"), true);
+  assert.equal(b.text("n"), "keep me");
+  assert.equal(b.prop("n", "color"), "mint");
+  assert.equal(b.hash(), a.hash());
+});
+
+test("Editing wins over a concurrent delete (edits re-assert the item with a fresh tag)", () => {
+  const a = new Doc("a", () => 1000);
+  const b = new Doc("b", () => 1000);
+  b.applyRemote(a.createItem("n", { kind: "note" }, "old idea"));
+  // offline: a deletes the note while b keeps working on it
+  const del = a.deleteItem("n");
+  const edit = [...b.touchItem("n"), ...b.editText("n", "better idea")];
+  a.applyRemote(edit);
+  b.applyRemote(del);
+  assert.equal(a.hasItem("n"), true);
+  assert.equal(b.hasItem("n"), true);
+  assert.equal(a.text("n"), "better idea");
+  assert.equal(a.hash(), b.hash());
 });

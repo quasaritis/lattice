@@ -33,10 +33,22 @@ export interface SyncStats {
   hash: string;
 }
 
+/** A stroke someone is drawing right now (not yet committed to the CRDT). */
+export interface LiveInk {
+  replica: string;
+  stroke: string;
+  brush: string;
+  color: string;
+  /** flat [x, y, p, x, y, p, ...] in world coordinates */
+  pts: number[];
+  done: boolean;
+}
+
 export interface SessionEvents {
   status(s: SyncStatus, detail?: string): void;
   peers(peers: PresenceMeta[]): void;
   cursor(c: Cursor): void;
+  liveInk?(ink: LiveInk): void;
   stats(s: SyncStats): void;
 }
 
@@ -161,6 +173,12 @@ export class BoardSession {
     this.emitStats();
   }
 
+  /** Stream an in-progress stroke so others watch it being drawn (ephemeral, best effort). */
+  sendLiveInk(ink: Omit<LiveInk, "replica">): void {
+    if (this.paused) return;
+    this.channel.broadcast("ink", { ...ink, replica: this.me.replica, pts: ink.pts.slice(-1500).map((n) => Math.round(n * 10) / 10) });
+  }
+
   sendCursor(x: number, y: number): void {
     if (this.paused) return;
     this.channel.broadcast("cursor", { replica: this.me.replica, name: this.me.name, color: this.me.color, x: Math.round(x), y: Math.round(y) });
@@ -171,6 +189,16 @@ export class BoardSession {
   private onBroadcast(event: string, payload: any): void {
     if (event === "ops" && Array.isArray(payload?.ops)) {
       this.doc.applyRemote(payload.ops.filter(isOp));
+    } else if (event === "ink" && payload && typeof payload.replica === "string" && payload.replica !== this.me.replica) {
+      const pts = Array.isArray(payload.pts) ? payload.pts.filter((n: unknown) => typeof n === "number" && Number.isFinite(n)).slice(0, 1500) : [];
+      this.on.liveInk?.({
+        replica: payload.replica,
+        stroke: String(payload.stroke ?? "").slice(0, 40),
+        brush: ["pen", "marker", "hl"].includes(payload.brush) ? payload.brush : "pen",
+        color: /^[a-z]{2,12}$/.test(String(payload.color)) ? String(payload.color) : "ink",
+        pts,
+        done: payload.done === true,
+      });
     } else if (event === "cursor" && payload && typeof payload.replica === "string" && payload.replica !== this.me.replica) {
       const x = Number(payload.x);
       const y = Number(payload.y);

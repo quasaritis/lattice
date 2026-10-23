@@ -2,83 +2,77 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <title>Board · Lattice</title>
-<meta name="description" content="A shared Lattice board. Edits merge without conflicts, even offline.">
+<meta name="description" content="A shared Lattice board. Draw, write, drop images. Edits merge without conflicts, even offline.">
+<meta name="theme-color" content="#f8fafb">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="preconnect" href="https://mftkwebfvmmtyqfkizcq.supabase.co" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shantell+Sans:ital,wght,BNCE,INFM@0,300..800,-100..100,0..100&family=Schibsted+Grotesk:wght@400..800&family=JetBrains+Mono:wght@500&display=swap">
 <link rel="stylesheet" href="/styles.css">
 <link rel="stylesheet" href="/board.css">
 </head>
 <body class="board-page">
-<header class="topbar">
-  <a class="brand" href="/" aria-label="Lattice home">
-    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 4 28 16 16 28 4 16Z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M10 10 22 22M22 10 10 22" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="16" cy="4" r="2.6" fill="var(--accent)"/></svg>
-    <span>Lattice</span>
-  </a>
-  <h1 class="title" id="boardTitle">Loading board…</h1>
-  <div class="spacer"></div>
-  <div class="peers" id="peers" aria-label="People on this board"></div>
-  <span class="pill" id="status" data-s="loading" role="status"><span class="dot"></span><span id="statusText">Loading</span></span>
-  <button class="btn small" id="offlineBtn" type="button" aria-pressed="false" title="Cut this tab off the network to test offline editing">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 8.8a15 15 0 0 1 20 0M5.2 12.3a10 10 0 0 1 13.6 0M8.5 15.8a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1.2" fill="currentColor"/></svg>
-    <span>Go offline</span>
-  </button>
-  <button class="btn small primary" id="shareBtn" type="button">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a5 5 0 0 0 7.1 0l3-3a5 5 0 0 0-7.1-7.1l-1 1"/><path d="M14 10a5 5 0 0 0-7.1 0l-3 3a5 5 0 0 0 7.1 7.1l1-1"/></svg>
-    <span>Copy link</span>
-  </button>
-</header>
 
-<nav class="tools" aria-label="Tools">
-  <button class="icon-btn" data-tool="select" aria-pressed="true" title="Select and move (V)">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M5 3l14 8-6.2 1.6L10 19z"/></svg><span class="sr-only">Select</span>
-  </button>
-  <button class="icon-btn" data-tool="note" aria-pressed="false" title="Note (N)">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 4h16v11l-5 5H4z"/><path d="M15 20v-5h5"/></svg><span class="sr-only">Note</span>
-  </button>
-  <button class="icon-btn" data-tool="rect" aria-pressed="false" title="Box (R)">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="5.5" width="17" height="13" rx="1.5"/></svg><span class="sr-only">Box</span>
-  </button>
-  <button class="icon-btn" data-tool="ellipse" aria-pressed="false" title="Bubble (O)">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="12" rx="8.5" ry="6.5"/></svg><span class="sr-only">Bubble</span>
-  </button>
-</nav>
-
-<main class="canvas grain" id="canvas" tabindex="-1" aria-label="Board canvas">
+<main class="canvas" id="canvas" tabindex="-1" aria-label="Board canvas">
   <div class="world" id="world"></div>
   <div class="cursors" id="cursors" aria-hidden="true"></div>
   <div class="empty" id="empty" hidden>
-    <p class="empty-title">Double-click anywhere to add a note.</p>
-    <p>Send the link to a friend and edit at the same time. Go offline, keep editing, come back: everything merges.</p>
+    <p class="empty-title">This board is empty.</p>
+    <p>Pick the pen and draw, or double-click to drop a note. Paste or drag in an image.</p>
   </div>
+  <div class="drop" id="drop" hidden><p>Drop to add the image</p></div>
 </main>
 
-<div class="inspector" id="inspector" hidden role="toolbar" aria-label="Selected item">
-  <div class="swatches" id="swatches"></div>
-  <span class="sep"></span>
-  <button class="icon-btn" id="deleteBtn" type="button" title="Delete (Del)">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13"/></svg><span class="sr-only">Delete</span>
-  </button>
+<header class="bar top-left">
+  <a class="mark" href="/" aria-label="Lattice home">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6.5 20.5c3-5.5 6.2-9.9 9.6-13.2M10 25.5c4.3-7 8.6-12.3 13-16M16.5 25.5c2.6-4 5.2-7.3 8-9.8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><circle cx="25.5" cy="7" r="2.6" fill="var(--red)"/></svg>
+  </a>
+  <input class="title" id="title" value="Loading board…" aria-label="Board name" maxlength="80" spellcheck="false" disabled>
+  <span class="status" id="status" data-s="loading" role="status"><i></i><span id="statusText">Loading</span></span>
+</header>
+
+<header class="bar top-right">
+  <div class="peers" id="peers" aria-label="People on this board"></div>
+  <button class="icon-btn" id="offlineBtn" type="button" aria-pressed="false" title="Go offline (test offline editing)"></button>
+  <button class="btn primary small" id="shareBtn" type="button"></button>
+  <div id="account"></div>
+</header>
+
+<div class="options" id="options" hidden role="toolbar" aria-label="Colour"></div>
+
+<nav class="dock" id="dock" aria-label="Tools">
+  <span class="dock-pill" id="dockPill" aria-hidden="true"></span>
+</nav>
+
+<div class="bar bottom-left">
+  <div class="group">
+    <button class="icon-btn" id="undoBtn" type="button" title="Undo (Ctrl+Z)" aria-label="Undo" disabled></button>
+    <button class="icon-btn" id="redoBtn" type="button" title="Redo (Ctrl+Shift+Z)" aria-label="Redo" disabled></button>
+  </div>
+  <div class="group">
+    <button class="icon-btn" id="zoomOut" type="button" title="Zoom out (−)" aria-label="Zoom out"></button>
+    <button class="zoom-label data" id="zoomLabel" type="button" title="Fit everything (Shift+1)">100%</button>
+    <button class="icon-btn" id="zoomIn" type="button" title="Zoom in (+)" aria-label="Zoom in"></button>
+  </div>
 </div>
 
-<footer class="proofbar" aria-label="Sync details">
+<div class="bar bottom-right">
   <span class="fingerprint" id="fingerprint" title="State fingerprint. Two screens showing the same code have exactly the same board.">
     <span class="swatches" id="fpSwatches"></span><span class="data" id="fpText">--------</span>
   </span>
-  <span class="data muted" id="syncInfo">log 0 · unsent 0</span>
-  <a class="muted" href="/lab">How merging works</a>
-</footer>
+  <span class="sync data" id="syncInfo"></span>
+</div>
 
-<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<input type="file" id="filePick" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
 
 <div class="fatal" id="fatal" hidden>
   <div>
     <h2 id="fatalTitle">This board doesn't exist.</h2>
     <p id="fatalText">The link may be mistyped, or the board was never created.</p>
-    <a class="btn primary" href="/">Start a new board</a>
+    <a class="btn primary" href="/boards">Go to your boards</a>
   </div>
 </div>
 

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Your boards · Lattice</title>
+<meta name="description" content="Boards you've opened on Lattice.">
+<meta name="theme-color" content="#f8fafb">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shantell+Sans:ital,wght,BNCE,INFM@0,300..800,-100..100,0..100&family=Schibsted+Grotesk:wght@400..800&display=swap">
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body class="site">
+<header class="nav">
+  <a class="brand" href="/" aria-label="Lattice home">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M6.5 20.5c3-5.5 6.2-9.9 9.6-13.2M10 25.5c4.3-7 8.6-12.3 13-16M16.5 25.5c2.6-4 5.2-7.3 8-9.8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><circle cx="25.5" cy="7" r="2.6" fill="var(--red)"/></svg>
+    <span>Lattice</span>
+  </a>
+  <nav class="nav-links" aria-label="Main">
+    <a href="/#merge">How it merges</a>
+    <a href="/lab">Break it</a>
+    <a href="https://github.com/quasaritis/lattice">Code</a>
+  </nav>
+  <div class="nav-actions"><div id="account"></div></div>
+</header>
+<main class="boards-page">
+  <div class="boards-head">
+    <div>
+      <h1>Your boards</h1>
+      <p id="boardsSub">Boards you've opened on this device.</p>
+    </div>
+    <button class="btn primary js-new-board" type="button">New board</button>
+  </div>
+  <div class="boards-note" id="signinNote" hidden>
+    <p>Sign in to keep this list on every device. Boards still work without an account.</p>
+    <button class="btn small" id="signinBtn" type="button">Sign in</button>
+  </div>
+  <p class="new-error" id="newError" role="alert" hidden></p>
+  <ul class="board-grid" id="grid" aria-live="polite"></ul>
+  <p class="boards-empty" id="empty" hidden>No boards yet. Start one, or open a link someone sent you.</p>
+</main>
+<script type="module" src="/js/app/boards.js"></script>
+</body>
+</html>

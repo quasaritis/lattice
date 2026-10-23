@@ -1,33 +1,33 @@
-/** The board page: renders the CRDT document and turns pointer/keyboard input into ops. */
+/** The board page: tools, input, undo, images, presence. Rendering lives in view.ts. */
+import type { Op } from "../crdt/doc.js";
 import type { Json } from "../crdt/lww.js";
-import { BoardSession, type Cursor, type SyncStats, type SyncStatus } from "../sync/session.js";
-import type { PresenceMeta } from "../sync/realtime.js";
-import { api, ApiError } from "../sync/api.js";
+import { BRUSH_SIZE, decodeStroke, distanceToPolyline, encodeStroke, type Brush, type Pt } from "../draw/stroke.js";
 import { newItemId } from "../lab/random.js";
-import { INKS, INK_KEYS, cpToUtf16, el, identity, initials, renderFingerprint, utf16ToCp } from "./ui.js";
+import { api, ApiError } from "../sync/api.js";
+import { currentUser, onAuthChange } from "../sync/auth.js";
+import type { PresenceMeta } from "../sync/realtime.js";
+import { BoardSession, type Cursor, type LiveInk, type SyncStats, type SyncStatus } from "../sync/session.js";
+import { mountAccount } from "./account.js";
+import { icon, type IconName } from "./icons.js";
+import { HL_COLORS, INK, PAPER, PAPER_KEYS, PEN_COLORS, inkHex } from "./palette.js";
+import { boardPreview } from "./preview.js";
+import { rememberBoard } from "./recent.js";
+import { cpToUtf16, el, identity, initials, renderFingerprint, toast, utf16ToCp } from "./ui.js";
+import { BoardView, num, type Geom } from "./view.js";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
-
-// ------------------------------------------------------------------ boot
-
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const boardId = (location.pathname.match(/\/b\/([^/]+)/)?.[1] ?? new URLSearchParams(location.search).get("b") ?? "").toLowerCase();
 
-const me = identity();
-const meta: PresenceMeta = { replica: me.replica, name: me.name, color: me.color };
+const who = identity();
+const user = currentUser();
+const meta: PresenceMeta = { replica: who.replica, name: user?.name ?? who.name, color: who.color };
 
 const canvas = $("canvas");
 const world = $("world");
 const cursorsLayer = $("cursors");
 
-type Tool = "select" | "note" | "rect" | "ellipse";
-let tool: Tool = "select";
-let selected: string | null = null;
-let editing: { item: string; ta: HTMLTextAreaElement; anchor: string; focus: string } | null = null;
-const cam = { x: 0, y: 0, z: 1 };
-const nodes = new Map<string, HTMLElement>();
 let peers: PresenceMeta[] = [];
-
 const session = new BoardSession(boardId, meta, {
   status: renderStatus,
   peers: (p) => {
@@ -36,237 +36,356 @@ const session = new BoardSession(boardId, meta, {
   },
   cursor: onRemoteCursor,
   stats: renderStats,
+  liveInk: onRemoteInk,
 });
 const doc = session.doc;
+const view = new BoardView(world, doc, { animateRemote: true });
 
-if (!UUID_RE.test(boardId)) {
-  fatal("This link isn't a board.", "Board links look like lattice…/b/ followed by a long code. Start a new board instead.");
-} else {
-  void boot();
+// ================================================================== tools
+
+type Tool = "select" | "hand" | "pen" | "hl" | "arrow" | "eraser" | "note" | "text" | "rect" | "ellipse" | "image";
+const TOOLS: { id: Tool; icon: IconName; label: string; key: string; group: number }[] = [
+  { id: "select", icon: "select", label: "Select", key: "V", group: 0 },
+  { id: "hand", icon: "hand", label: "Pan", key: "H", group: 0 },
+  { id: "pen", icon: "pen", label: "Pen", key: "P", group: 1 },
+  { id: "hl", icon: "highlighter", label: "Highlighter", key: "M", group: 1 },
+  { id: "arrow", icon: "arrow", label: "Arrow", key: "A", group: 1 },
+  { id: "eraser", icon: "eraser", label: "Eraser", key: "E", group: 1 },
+  { id: "note", icon: "note", label: "Sticky note", key: "N", group: 2 },
+  { id: "text", icon: "text", label: "Text", key: "T", group: 2 },
+  { id: "rect", icon: "rect", label: "Box", key: "R", group: 2 },
+  { id: "ellipse", icon: "ellipse", label: "Bubble", key: "O", group: 2 },
+  { id: "image", icon: "image", label: "Image", key: "I", group: 2 },
+];
+
+const prefs = (() => {
+  try {
+    return JSON.parse(localStorage.getItem("lattice:tools") ?? "{}") as Record<string, string>;
+  } catch {
+    return {} as Record<string, string>;
+  }
+})();
+const style = {
+  penColor: PEN_COLORS.includes(prefs.penColor) ? prefs.penColor : "ink",
+  penBrush: (prefs.penBrush === "marker" ? "marker" : "pen") as Brush,
+  hlColor: HL_COLORS.includes(prefs.hlColor) ? prefs.hlColor : "yellow",
+  arrowColor: PEN_COLORS.includes(prefs.arrowColor) ? prefs.arrowColor : "ink",
+};
+function savePrefs() {
+  try {
+    localStorage.setItem("lattice:tools", JSON.stringify(style));
+  } catch {
+    /* fine */
+  }
 }
 
-async function boot(): Promise<void> {
-  doc.onChange((change, source) => {
-    for (const item of change.items) renderItem(item, source === "remote");
-    for (const item of change.texts) renderText(item, source);
-    $("empty").hidden = doc.itemIds().length > 0;
+let tool: Tool = "select";
+const dock = $("dock");
+const pill = $("dockPill");
+const toolButtons = new Map<Tool, HTMLButtonElement>();
+{
+  let lastGroup = 0;
+  for (const t of TOOLS) {
+    if (t.group !== lastGroup) {
+      dock.append(el("span", "sep"));
+      lastGroup = t.group;
+    }
+    const b = el("button", "icon-btn");
+    b.type = "button";
+    b.dataset.tool = t.id;
+    b.setAttribute("aria-label", `${t.label} (${t.key})`);
+    b.setAttribute("aria-pressed", "false");
+    b.innerHTML = `${icon(t.icon)}<span class="tip">${t.label}<kbd>${t.key}</kbd></span>`;
+    if (t.id === "pen" || t.id === "hl" || t.id === "arrow") b.append(el("i", "swatch-dot"));
+    b.addEventListener("click", () => (t.id === "image" ? pickImage() : setTool(t.id)));
+    dock.append(b);
+    toolButtons.set(t.id, b);
+  }
+  // once one tooltip has shown, neighbours show instantly
+  let warm: ReturnType<typeof setTimeout> | null = null;
+  dock.addEventListener("pointerover", () => {
+    if (warm) clearTimeout(warm);
+    warm = setTimeout(() => dock.classList.add("tips-warm"), 500);
   });
-  try {
-    await session.start();
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 404) fatal("This board doesn't exist.", "The link may be mistyped, or the board was never created.");
-    else fatal("Couldn't open this board.", err instanceof Error ? err.message : "Check your connection and try again.");
+  dock.addEventListener("pointerleave", () => {
+    if (warm) clearTimeout(warm);
+    setTimeout(() => dock.classList.remove("tips-warm"), 300);
+  });
+}
+
+function setTool(t: Tool): void {
+  if (t === "image") return pickImage();
+  stopEditing();
+  if (t !== "select") select(null);
+  tool = t;
+  for (const [id, b] of toolButtons) b.setAttribute("aria-pressed", String(id === t));
+  canvas.className = `canvas tool-${t}`;
+  movePill();
+  renderOptions();
+}
+
+function movePill(): void {
+  const b = toolButtons.get(tool);
+  if (!b) return;
+  pill.style.transform = `translate(${b.offsetLeft}px, ${b.offsetTop}px)`;
+  pill.style.width = `${b.offsetWidth}px`;
+  pill.style.height = `${b.offsetHeight}px`;
+}
+window.addEventListener("resize", movePill);
+
+function paintDots(): void {
+  const dot = (t: Tool, hex: string) => {
+    const i = toolButtons.get(t)?.querySelector<HTMLElement>(".swatch-dot");
+    if (i) i.style.background = hex;
+  };
+  dot("pen", inkHex(style.penColor));
+  dot("hl", inkHex(style.hlColor));
+  dot("arrow", inkHex(style.arrowColor));
+}
+
+// ================================================================== options bar (colours)
+
+const optionsBar = $("options");
+
+function swatch(hex: string, label: string, pressed: boolean, onPick: () => void): HTMLButtonElement {
+  const b = el("button", "swatch");
+  b.type = "button";
+  b.style.setProperty("--c", hex);
+  b.setAttribute("aria-label", label);
+  b.setAttribute("aria-pressed", String(pressed));
+  b.append(el("i"));
+  b.addEventListener("click", onPick);
+  return b;
+}
+
+function renderOptions(): void {
+  optionsBar.replaceChildren();
+  const add = (...n: Node[]) => optionsBar.append(...n);
+  if (tool === "pen" || tool === "hl" || tool === "arrow") {
+    const key = tool === "pen" ? "penColor" : tool === "hl" ? "hlColor" : "arrowColor";
+    const list = tool === "hl" ? HL_COLORS : PEN_COLORS;
+    for (const c of list) add(swatch(INK[c].hex, INK[c].label, style[key] === c, () => ((style[key] = c), savePrefs(), paintDots(), renderOptions())));
+    if (tool === "pen") {
+      add(el("span", "sep"));
+      for (const b of ["pen", "marker"] as Brush[]) {
+        const btn = el("button", "icon-btn");
+        btn.type = "button";
+        btn.setAttribute("aria-pressed", String(style.penBrush === b));
+        btn.setAttribute("aria-label", b === "pen" ? "Fine pen" : "Thick marker");
+        btn.title = b === "pen" ? "Fine pen" : "Thick marker";
+        btn.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M5 15c3-5 6 2 9-3s4-3 5-4" fill="none" stroke="currentColor" stroke-width="${b === "pen" ? 1.75 : 4.5}" stroke-linecap="round"/></svg>`;
+        btn.addEventListener("click", () => ((style.penBrush = b), savePrefs(), renderOptions()));
+        add(btn);
+      }
+    }
+    optionsBar.hidden = false;
     return;
   }
-  const info = await api.board(boardId).catch(() => null);
-  const title = info?.title ?? "Board";
-  $("boardTitle").textContent = title;
-  document.title = `${title} · Lattice`;
-  for (const id of doc.itemIds()) renderItem(id, false);
-  $("empty").hidden = doc.itemIds().length > 0;
-  fitView();
-  renderPeers();
+  if (tool === "select" && selected && doc.hasItem(selected)) {
+    const id = selected;
+    const kind = view.kind(id);
+    const current = String(doc.prop(id, "color") ?? "");
+    if (kind === "note" || kind === "rect" || kind === "ellipse") {
+      for (const c of PAPER_KEYS) add(swatch(PAPER[c].hex, PAPER[c].label, (current || "sun") === c, () => setProps(id, { color: c })));
+    } else if (kind !== "image") {
+      const list = (kind === "ink" && doc.prop(id, "brush") === "hl") ? HL_COLORS : PEN_COLORS;
+      for (const c of list) add(swatch(INK[c].hex, INK[c].label, (current || "ink") === c, () => setProps(id, { color: c })));
+    }
+    if (optionsBar.childElementCount) add(el("span", "sep"));
+    const del = el("button", "icon-btn");
+    del.type = "button";
+    del.innerHTML = icon("trash");
+    del.setAttribute("aria-label", "Delete (Del)");
+    del.title = "Delete (Del)";
+    del.addEventListener("click", () => deleteItems([id]));
+    add(del);
+    optionsBar.hidden = false;
+    return;
+  }
+  optionsBar.hidden = true;
 }
 
-function fatal(title: string, text: string): void {
-  $("fatalTitle").textContent = title;
-  $("fatalText").textContent = text;
-  $("fatal").hidden = false;
+// ================================================================== undo / redo
+
+interface Step {
+  undo(): Op[];
+  redo(): Op[];
+}
+const undoStack: Step[] = [];
+const redoStack: Step[] = [];
+
+function pushStep(s: Step): void {
+  undoStack.push(s);
+  if (undoStack.length > 200) undoStack.shift();
+  redoStack.length = 0;
+  renderUndo();
 }
 
-window.addEventListener("pagehide", () => session.stop());
+function undo(): void {
+  stopEditing();
+  const s = undoStack.pop();
+  if (!s) return;
+  session.commit(s.undo());
+  redoStack.push(s);
+  renderUndo();
+  renderOptions();
+}
 
-// ------------------------------------------------------------------ camera
+function redo(): void {
+  stopEditing();
+  const s = redoStack.pop();
+  if (!s) return;
+  session.commit(s.redo());
+  undoStack.push(s);
+  renderUndo();
+  renderOptions();
+}
+
+function renderUndo(): void {
+  ($("undoBtn") as HTMLButtonElement).disabled = !undoStack.length;
+  ($("redoBtn") as HTMLButtonElement).disabled = !redoStack.length;
+}
+
+const createdStep = (ids: string[]): Step => ({
+  undo: () => ids.flatMap((id) => doc.deleteItem(id)),
+  redo: () => ids.flatMap((id) => doc.restoreItem(id)),
+});
+
+function setProps(id: string, fields: Record<string, Json>, record = true): void {
+  const before: Record<string, Json> = {};
+  for (const k of Object.keys(fields)) before[k] = (doc.prop(id, k) ?? null) as Json;
+  session.commit([...(record ? doc.touchItem(id) : []), ...doc.setProps(id, fields)]);
+  if (record) pushStep({ undo: () => doc.setProps(id, before), redo: () => doc.setProps(id, fields) });
+  renderOptions();
+}
+
+function deleteItems(ids: string[]): void {
+  const live = ids.filter((id) => doc.hasItem(id));
+  if (!live.length) return;
+  if (live.includes(selected ?? "")) select(null);
+  session.commit(live.flatMap((id) => doc.deleteItem(id)));
+  pushStep({ undo: () => live.flatMap((id) => doc.restoreItem(id)), redo: () => live.flatMap((id) => doc.deleteItem(id)) });
+}
+
+// ================================================================== camera
+
+const cam = { x: 0, y: 0, z: 1 };
 
 function applyCamera(): void {
   world.style.transform = `translate(${cam.x}px, ${cam.y}px) scale(${cam.z})`;
+  // the faint ghosting is part of the board, so it moves with it
+  canvas.style.backgroundPosition = `${cam.x}px ${cam.y}px`;
+  canvas.style.backgroundSize = `${640 * cam.z}px`;
   for (const c of remoteCursors.values()) placeCursor(c);
+  $("zoomLabel").textContent = `${Math.round(cam.z * 100)}%`;
 }
 
 function toWorld(clientX: number, clientY: number): { x: number; y: number } {
-  const r = canvas.getBoundingClientRect();
-  return { x: (clientX - r.left - cam.x) / cam.z, y: (clientY - r.top - cam.y) / cam.z };
+  return { x: (clientX - cam.x) / cam.z, y: (clientY - cam.y) / cam.z };
 }
 
-function fitView(): void {
-  const ids = doc.itemIds();
-  const r = canvas.getBoundingClientRect();
-  if (!ids.length) {
-    cam.x = r.width / 2;
-    cam.y = r.height / 2;
-    cam.z = 1;
-    return applyCamera();
-  }
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const id of ids) {
-    const g = geom(id);
-    x0 = Math.min(x0, g.x); y0 = Math.min(y0, g.y);
-    x1 = Math.max(x1, g.x + g.w); y1 = Math.max(y1, g.y + g.h);
-  }
-  const pad = Math.min(80, r.width * 0.06);
-  cam.z = Math.max(0.3, Math.min(1, (r.width - pad * 2) / (x1 - x0), (r.height - pad * 2) / (y1 - y0)));
-  cam.x = r.width / 2 - ((x0 + x1) / 2) * cam.z;
-  cam.y = r.height / 2 - ((y0 + y1) / 2) * cam.z;
+function zoomAt(z: number, px: number, py: number): void {
+  z = Math.max(0.1, Math.min(4, z));
+  cam.x = px - ((px - cam.x) * z) / cam.z;
+  cam.y = py - ((py - cam.y) * z) / cam.z;
+  cam.z = z;
   applyCamera();
+}
+
+function animateCamera(target: { x: number; y: number; z: number }): void {
+  const from = { ...cam };
+  const t0 = performance.now();
+  const dur = matchMedia("(prefers-reduced-motion: reduce)").matches ? 1 : 420;
+  const step = (t: number) => {
+    const k = Math.min(1, (t - t0) / dur);
+    const e = 1 - Math.pow(1 - k, 4);
+    cam.x = from.x + (target.x - from.x) * e;
+    cam.y = from.y + (target.y - from.y) * e;
+    cam.z = from.z + (target.z - from.z) * e;
+    applyCamera();
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+function fitView(animate = false): void {
+  const b = view.bounds();
+  const W = innerWidth, H = innerHeight;
+  let target: { x: number; y: number; z: number };
+  if (!b) target = { x: W / 2, y: H / 2, z: 1 };
+  else {
+    const padX = Math.min(120, W * 0.08), padY = Math.min(130, H * 0.14);
+    const z = Math.max(0.15, Math.min(1.2, (W - padX * 2) / b.w, (H - padY * 2) / b.h));
+    target = { x: W / 2 - (b.x + b.w / 2) * z, y: H / 2 - (b.y + b.h / 2) * z, z };
+  }
+  if (animate) animateCamera(target);
+  else {
+    Object.assign(cam, target);
+    applyCamera();
+  }
 }
 
 canvas.addEventListener(
   "wheel",
   (e) => {
     e.preventDefault();
-    if (e.ctrlKey || e.metaKey) {
-      const r = canvas.getBoundingClientRect();
-      const px = e.clientX - r.left, py = e.clientY - r.top;
-      const z = Math.max(0.25, Math.min(2.5, cam.z * Math.exp(-e.deltaY * 0.01)));
-      cam.x = px - ((px - cam.x) * z) / cam.z;
-      cam.y = py - ((py - cam.y) * z) / cam.z;
-      cam.z = z;
-    } else {
+    if (e.ctrlKey || e.metaKey) zoomAt(cam.z * Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY);
+    else {
       cam.x -= e.deltaX;
       cam.y -= e.deltaY;
+      applyCamera();
     }
-    applyCamera();
   },
   { passive: false },
 );
 
-// ------------------------------------------------------------------ rendering
+$("zoomIn").innerHTML = icon("plus");
+$("zoomOut").innerHTML = icon("minus");
+$("zoomIn").addEventListener("click", () => zoomAt(cam.z * 1.25, innerWidth / 2, innerHeight / 2));
+$("zoomOut").addEventListener("click", () => zoomAt(cam.z / 1.25, innerWidth / 2, innerHeight / 2));
+$("zoomLabel").addEventListener("click", () => fitView(true));
 
-const num = (v: Json | undefined, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+// ================================================================== selection and text editing
 
-function geom(id: string) {
-  return {
-    x: num(doc.prop(id, "x"), 0),
-    y: num(doc.prop(id, "y"), 0),
-    w: Math.max(80, num(doc.prop(id, "w"), 180)),
-    h: Math.max(60, num(doc.prop(id, "h"), 140)),
-  };
-}
-
-function renderItem(id: string, remote: boolean): void {
-  let node = nodes.get(id);
-  if (!doc.hasItem(id)) {
-    if (node) {
-      node.remove();
-      nodes.delete(id);
-    }
-    if (selected === id) select(null);
-    if (editing?.item === id) editing = null;
-    return;
-  }
-  if (!node) {
-    node = el("div", "item");
-    node.dataset.id = id;
-    node.append(el("div", "text"), el("div", "grip"));
-    if (remote) node.classList.add("arrive");
-    world.append(node);
-    nodes.set(id, node);
-    renderText(id, "remote");
-  }
-  const kind = String(doc.prop(id, "kind") ?? "note");
-  node.className = `item ${["note", "rect", "ellipse"].includes(kind) ? kind : "note"}${selected === id ? " selected" : ""}${node.classList.contains("dragging") ? " dragging" : ""}`;
-  const ink = INKS[String(doc.prop(id, "color") ?? "sun")] ?? INKS.sun;
-  node.style.setProperty("--fill", ink.fill);
-  node.style.setProperty("--misreg", ink.misreg);
-  if (!node.classList.contains("dragging")) {
-    const g = geom(id);
-    node.style.transform = `translate(${g.x}px, ${g.y}px)`;
-    node.style.width = `${g.w}px`;
-    node.style.height = `${g.h}px`;
-  }
-  node.style.zIndex = String(Math.round(num(doc.prop(id, "z"), 0)));
-  node.setAttribute("aria-label", `${ink.label} ${kind}: ${doc.text(id) || "empty"}`);
-  if (selected === id) renderInspector();
-}
-
-function renderText(id: string, source: "local" | "remote"): void {
-  const node = nodes.get(id);
-  if (!node) return;
-  const text = doc.text(id);
-  if (editing?.item === id) {
-    if (source === "remote") {
-      // keep the caret glued to the character it was after, while others type around it
-      const { ta, anchor, focus } = editing;
-      const rga = doc.rga(id);
-      ta.value = text;
-      const a = cpToUtf16(text, rga.indexAfter(anchor));
-      const f = cpToUtf16(text, rga.indexAfter(focus));
-      ta.setSelectionRange(Math.min(a, f), Math.max(a, f));
-    }
-    return;
-  }
-  const t = node.querySelector(".text");
-  if (t && t.textContent !== text) t.textContent = text;
-}
-
-// ------------------------------------------------------------------ selection and editing
+let selected: string | null = null;
+let editing: { item: string; ta: HTMLTextAreaElement; anchor: string; focus: string; before: string } | null = null;
 
 function select(id: string | null): void {
   if (selected === id) return;
-  const prev = selected;
   selected = id;
-  if (prev) nodes.get(prev)?.classList.remove("selected");
-  if (id) {
-    nodes.get(id)?.classList.add("selected");
-    bringToFront(id);
-  }
-  renderInspector();
+  view.select(id);
+  if (id) bringToFront(id);
+  renderOptions();
+}
+
+function topZ(): number {
+  let z = 0;
+  for (const id of doc.itemIds()) z = Math.max(z, num(doc.prop(id, "z"), 0));
+  return z + 1;
 }
 
 function bringToFront(id: string): void {
-  let max = -Infinity;
-  for (const other of doc.itemIds()) if (other !== id) max = Math.max(max, num(doc.prop(other, "z"), 0));
   const z = num(doc.prop(id, "z"), 0);
-  if (max >= z) session.commit(doc.setProps(id, { z: max + 1 }));
+  for (const other of doc.itemIds()) if (other !== id && num(doc.prop(other, "z"), 0) >= z) return void session.commit(doc.setProps(id, { z: topZ() }));
 }
 
-function renderInspector(): void {
-  const box = $("inspector");
-  if (!selected || !doc.hasItem(selected)) {
-    box.hidden = true;
-    return;
-  }
-  box.hidden = false;
-  const current = String(doc.prop(selected, "color") ?? "sun");
-  const sw = $("swatches");
-  if (!sw.childElementCount) {
-    for (const k of INK_KEYS) {
-      const b = el("button", "swatch");
-      b.type = "button";
-      b.dataset.ink = k;
-      b.style.setProperty("--c", INKS[k].fill);
-      b.title = INKS[k].label;
-      b.setAttribute("aria-label", `Colour: ${INKS[k].label}`);
-      b.addEventListener("click", () => selected && session.commit(doc.setProps(selected, { color: k })));
-      sw.append(b);
-    }
-  }
-  for (const b of sw.querySelectorAll<HTMLButtonElement>(".swatch")) b.setAttribute("aria-pressed", String(b.dataset.ink === current));
-}
-
-$("deleteBtn").addEventListener("click", deleteSelected);
-
-function deleteSelected(): void {
-  if (!selected) return;
-  const id = selected;
-  select(null);
-  session.commit(doc.deleteItem(id));
-  toast("Deleted. If someone edits it at the same moment, their copy survives.");
-}
+const TEXT_KINDS = new Set(["note", "rect", "ellipse", "text"]);
 
 function startEditing(id: string): void {
-  const node = nodes.get(id);
-  if (!node || editing?.item === id) return;
+  const node = view.nodes.get(id);
+  if (!node || !TEXT_KINDS.has(view.kind(id)) || editing?.item === id) return;
   stopEditing();
+  if (tool !== "select") setTool("select");
   select(id);
   const ta = el("textarea");
   ta.value = doc.text(id);
   ta.maxLength = 2000;
-  ta.setAttribute("aria-label", "Note text");
-  ta.spellcheck = true;
+  ta.setAttribute("aria-label", "Text");
   node.querySelector(".text")?.replaceWith(ta);
-  const state = { item: id, ta, anchor: "", focus: "" };
+  const state = { item: id, ta, anchor: "", focus: "", before: doc.text(id) };
   editing = state;
+  session.commit(doc.touchItem(id)); // someone deleting it meanwhile won't erase this edit
+  view.editing = id;
   const track = () => {
     const rga = doc.rga(id);
     state.anchor = rga.idBefore(utf16ToCp(ta.value, ta.selectionStart));
@@ -274,17 +393,17 @@ function startEditing(id: string): void {
   };
   ta.addEventListener("input", () => {
     session.commit(doc.editText(id, ta.value));
-    if (ta.value !== doc.text(id)) ta.value = doc.text(id); // clamp (max length)
+    if (ta.value !== doc.text(id)) ta.value = doc.text(id);
     track();
   });
   for (const ev of ["keyup", "mouseup", "select", "focus"]) ta.addEventListener(ev, track);
   ta.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
+    e.stopPropagation();
+    if (e.key === "Escape" || (e.key === "Enter" && (e.metaKey || e.ctrlKey))) {
       e.preventDefault();
       stopEditing();
       canvas.focus();
     }
-    e.stopPropagation();
   });
   ta.addEventListener("blur", () => setTimeout(() => editing?.ta === ta && stopEditing(), 0));
   ta.addEventListener("pointerdown", (e) => e.stopPropagation());
@@ -293,176 +412,481 @@ function startEditing(id: string): void {
   track();
 }
 
+view.onTextRender = (id, source) => {
+  if (!editing || editing.item !== id || source !== "remote") return;
+  // keep the caret glued to the character it was after, while others type around it
+  const { ta, anchor, focus } = editing;
+  const text = doc.text(id);
+  const rga = doc.rga(id);
+  ta.value = text;
+  const a = cpToUtf16(text, rga.indexAfter(anchor));
+  const f = cpToUtf16(text, rga.indexAfter(focus));
+  ta.setSelectionRange(Math.min(a, f), Math.max(a, f));
+};
+
 function stopEditing(): void {
   if (!editing) return;
-  const { item, ta } = editing;
+  const { item, ta, before } = editing;
   editing = null;
+  view.editing = null;
   const t = el("div", "text", doc.text(item));
   ta.replaceWith(t);
+  const after = doc.text(item);
+  if (after !== before) pushStep({ undo: () => doc.editText(item, before), redo: () => doc.editText(item, after) });
 }
 
-// ------------------------------------------------------------------ pointer input
+// ================================================================== creating things
 
-function setTool(t: Tool): void {
-  tool = t;
-  for (const b of document.querySelectorAll<HTMLButtonElement>("[data-tool]")) b.setAttribute("aria-pressed", String(b.dataset.tool === t));
-  canvas.classList.toggle("placing", t !== "select");
-}
-for (const b of document.querySelectorAll<HTMLButtonElement>("[data-tool]")) b.addEventListener("click", () => setTool(b.dataset.tool as Tool));
-
-function createAt(kind: "note" | "rect" | "ellipse", x: number, y: number): string {
+function createAt(kind: "note" | "text" | "rect" | "ellipse", x: number, y: number): string {
   const id = newItemId();
-  const size = kind === "note" ? { w: 200, h: 160 } : kind === "rect" ? { w: 220, h: 130 } : { w: 200, h: 150 };
-  let z = 0;
-  for (const other of doc.itemIds()) z = Math.max(z, num(doc.prop(other, "z"), 0) + 1);
-  const color = kind === "note" ? "sun" : kind === "rect" ? "sky" : "rose";
-  session.commit(doc.createItem(id, { kind, x: Math.round(x - size.w / 2), y: Math.round(y - size.h / 2), ...size, color, z }));
-  nodes.get(id)?.classList.add("arrive");
+  const size = kind === "note" ? { w: 220, h: 180 } : kind === "rect" ? { w: 240, h: 140 } : kind === "ellipse" ? { w: 220, h: 160 } : { w: 280, h: 46 };
+  const color = kind === "note" ? "sun" : kind === "rect" ? "sky" : kind === "ellipse" ? "rose" : style.penColor;
+  session.commit(doc.createItem(id, { kind, x: Math.round(x - size.w / 2), y: Math.round(y - size.h / 2), ...size, color, z: topZ() }));
+  view.nodes.get(id)?.classList.add("arrive");
+  pushStep(createdStep([id]));
   return id;
 }
 
-type Drag =
-  | { kind: "move"; id: string; dx: number; dy: number; x: number; y: number; moved: boolean; last: number; wasSelected: boolean }
-  | { kind: "resize"; id: string; x0: number; y0: number; w: number; h: number; last: number }
-  | { kind: "pan"; sx: number; sy: number; cx: number; cy: number };
-let drag: Drag | null = null;
+// ================================================================== pointer input
+
+type Gesture =
+  | { kind: "pan"; sx: number; sy: number; cx: number; cy: number }
+  | { kind: "move"; id: string; dx: number; dy: number; start: Geom; x: number; y: number; moved: boolean; last: number; wasSelected: boolean }
+  | { kind: "resize"; id: string; x0: number; y0: number; start: Geom; w: number; h: number; last: number }
+  | { kind: "draw"; id: string; brush: Brush; color: string; pts: Pt[]; pressure: boolean; last: number; raf: number }
+  | { kind: "arrow"; id: string; a: { x: number; y: number }; b: { x: number; y: number } }
+  | { kind: "erase"; erased: string[] }
+  | { kind: "pinch"; startDist: number; startZ: number; wx: number; wy: number };
+
+let gesture: Gesture | null = null;
+const pointers = new Map<number, { x: number; y: number }>();
+let spaceDown = false;
+
+function startPinch(): void {
+  const [p1, p2] = [...pointers.values()];
+  const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
+  cancelGesture();
+  const w = toWorld(mx, my);
+  gesture = { kind: "pinch", startDist: Math.hypot(p1.x - p2.x, p1.y - p2.y) || 1, startZ: cam.z, wx: w.x, wy: w.y };
+}
+
+function cancelGesture(): void {
+  if (gesture?.kind === "draw") view.clearLive(gesture.id);
+  if (gesture?.kind === "arrow") view.clearLive(gesture.id);
+  gesture = null;
+}
 
 canvas.addEventListener("pointerdown", (e) => {
-  if (e.button !== 0 && e.button !== 1) return;
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointers.size === 2 && e.pointerType === "touch") return startPinch();
+  if (pointers.size > 1) return;
   const target = e.target as HTMLElement;
-  const itemNode = target.closest<HTMLElement>(".item");
+  if (target.closest("textarea")) return;
   const p = toWorld(e.clientX, e.clientY);
+  const itemNode = target.closest<HTMLElement>(".item");
+  try {
+    canvas.setPointerCapture(e.pointerId);
+  } catch {
+    /* ignore */
+  }
 
-  if (tool !== "select" && !itemNode) {
+  if (e.button === 1 || tool === "hand" || spaceDown) {
+    gesture = { kind: "pan", sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y };
+    canvas.classList.add("panning");
+    return;
+  }
+  if (e.button !== 0) return;
+
+  if (tool === "pen" || tool === "hl") {
+    stopEditing();
+    const brush: Brush = tool === "hl" ? "hl" : style.penBrush;
+    const pressure = e.pointerType === "pen";
+    gesture = { kind: "draw", id: newItemId(), brush, color: tool === "hl" ? style.hlColor : style.penColor, pts: [{ ...p, p: pressure ? e.pressure || 0.5 : 0.5 }], pressure, last: 0, raf: 0 };
+    view.setLive(gesture.id, gesture.pts, brush, gesture.color);
+    e.preventDefault();
+    return;
+  }
+  if (tool === "arrow") {
+    stopEditing();
+    gesture = { kind: "arrow", id: newItemId(), a: p, b: p };
+    e.preventDefault();
+    return;
+  }
+  if (tool === "eraser") {
+    stopEditing();
+    gesture = { kind: "erase", erased: [] };
+    eraseAt(p.x, p.y);
+    e.preventDefault();
+    return;
+  }
+  if (tool === "note" || tool === "text" || tool === "rect" || tool === "ellipse") {
     const id = createAt(tool, p.x, p.y);
-    setTool("select");
     e.preventDefault();
     startEditing(id);
     return;
   }
-  if (itemNode && e.button === 0) {
-    const id = itemNode.dataset.id!;
+
+  // select tool
+  if (itemNode && itemNode.dataset.id) {
+    const id = itemNode.dataset.id;
     if (editing?.item === id) return;
     stopEditing();
     const wasSelected = selected === id;
     select(id);
-    const g = geom(id);
-    if (target.classList.contains("grip")) drag = { kind: "resize", id, x0: p.x, y0: p.y, w: g.w, h: g.h, last: 0 };
-    else drag = { kind: "move", id, dx: p.x - g.x, dy: p.y - g.y, x: g.x, y: g.y, moved: false, last: 0, wasSelected };
-    canvas.setPointerCapture(e.pointerId);
+    const g = view.geom(id);
+    if (target.classList.contains("grip")) {
+      gesture = { kind: "resize", id, x0: p.x, y0: p.y, start: g, w: g.w, h: g.h, last: 0 };
+      session.commit(doc.touchItem(id));
+    }
+    else gesture = { kind: "move", id, dx: p.x - g.x, dy: p.y - g.y, start: g, x: g.x, y: g.y, moved: false, last: 0, wasSelected };
     e.preventDefault();
     return;
   }
   stopEditing();
   select(null);
-  drag = { kind: "pan", sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y };
+  gesture = { kind: "pan", sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y };
   canvas.classList.add("panning");
-  canvas.setPointerCapture(e.pointerId);
 });
 
 let lastCursorSent = 0;
+let lastInkSent = 0;
 canvas.addEventListener("pointermove", (e) => {
-  const p = toWorld(e.clientX, e.clientY);
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   const now = performance.now();
-  if (now - lastCursorSent > 60) {
+  const p = toWorld(e.clientX, e.clientY);
+  if (now - lastCursorSent > 50) {
     lastCursorSent = now;
     session.sendCursor(p.x, p.y);
   }
-  if (!drag) return;
-  if (drag.kind === "pan") {
-    cam.x = drag.cx + e.clientX - drag.sx;
-    cam.y = drag.cy + e.clientY - drag.sy;
-    applyCamera();
-    return;
-  }
-  const node = nodes.get(drag.id);
-  if (!node) return;
-  if (drag.kind === "move") {
-    drag.x = Math.round(p.x - drag.dx);
-    drag.y = Math.round(p.y - drag.dy);
-    if (!drag.moved) {
-      if (Math.hypot(drag.x - geom(drag.id).x, drag.y - geom(drag.id).y) < 3) return; // ignore jitter on a tap
-      drag.moved = true;
-      node.classList.add("dragging");
+  if (!gesture) return;
+  const g = gesture;
+  switch (g.kind) {
+    case "pinch": {
+      if (pointers.size < 2) return;
+      const [p1, p2] = [...pointers.values()];
+      const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
+      const z = Math.max(0.1, Math.min(4, (g.startZ * Math.hypot(p1.x - p2.x, p1.y - p2.y)) / g.startDist));
+      cam.z = z;
+      cam.x = mx - g.wx * z;
+      cam.y = my - g.wy * z;
+      applyCamera();
+      return;
     }
-    node.style.transform = `translate(${drag.x}px, ${drag.y}px)`;
-    // stream the drag to others ~12 times a second; the LWW register keeps only the newest
-    if (now - drag.last > 80) {
-      drag.last = now;
-      session.commit(doc.setProps(drag.id, { x: drag.x, y: drag.y }));
+    case "pan":
+      cam.x = g.cx + e.clientX - g.sx;
+      cam.y = g.cy + e.clientY - g.sy;
+      applyCamera();
+      return;
+    case "draw": {
+      const events = typeof e.getCoalescedEvents === "function" ? e.getCoalescedEvents() : [e];
+      for (const ce of events.length ? events : [e]) {
+        const q = toWorld(ce.clientX, ce.clientY);
+        const last = g.pts[g.pts.length - 1];
+        if (Math.hypot(q.x - last.x, q.y - last.y) * cam.z < 1.2) continue;
+        g.pts.push({ ...q, p: g.pressure ? ce.pressure || 0.5 : 0.5 });
+      }
+      if (!g.raf) g.raf = requestAnimationFrame(() => ((g.raf = 0), view.setLive(g.id, g.pts, g.brush, g.color)));
+      if (now - lastInkSent > 45) {
+        lastInkSent = now;
+        session.sendLiveInk({ stroke: g.id, brush: g.brush, color: g.color, pts: g.pts.flatMap((q) => [q.x, q.y, q.p]), done: false });
+      }
+      return;
     }
-  } else {
-    const w = Math.max(80, Math.round(drag.w + p.x - drag.x0));
-    const h = Math.max(60, Math.round(drag.h + p.y - drag.y0));
-    node.style.width = `${w}px`;
-    node.style.height = `${h}px`;
-    if (now - drag.last > 80) {
-      drag.last = now;
-      session.commit(doc.setProps(drag.id, { w, h }));
+    case "arrow":
+      g.b = p;
+      view.setLiveArrow(g.id, g.a, g.b, style.arrowColor);
+      return;
+    case "erase":
+      eraseAt(p.x, p.y);
+      return;
+    case "move": {
+      const node = view.nodes.get(g.id);
+      if (!node) return;
+      g.x = Math.round(p.x - g.dx);
+      g.y = Math.round(p.y - g.dy);
+      if (!g.moved) {
+        if (Math.hypot(g.x - g.start.x, g.y - g.start.y) * cam.z < 3) return;
+        g.moved = true;
+        node.classList.add("dragging");
+        session.commit(doc.touchItem(g.id));
+      }
+      view.place(g.id, node, { ...g.start, x: g.x, y: g.y });
+      if (now - g.last > 70) {
+        g.last = now;
+        session.commit(doc.setProps(g.id, { x: g.x, y: g.y }));
+      }
+      return;
+    }
+    case "resize": {
+      const node = view.nodes.get(g.id);
+      if (!node) return;
+      const kind = view.kind(g.id);
+      let w = Math.max(kind === "ink" ? 8 : 60, Math.round(g.start.w + p.x - g.x0));
+      let h = Math.max(kind === "ink" ? 8 : 30, Math.round(g.start.h + p.y - g.y0));
+      if (kind === "image" || kind === "ink" || e.shiftKey) {
+        // keep the aspect ratio for pictures and drawings
+        const k = Math.max(w / g.start.w, h / g.start.h);
+        w = Math.round(g.start.w * k);
+        h = Math.round(g.start.h * k);
+      }
+      g.w = w;
+      g.h = h;
+      view.place(g.id, node, { ...g.start, w, h });
+      if (now - g.last > 80) {
+        g.last = now;
+        session.commit(doc.setProps(g.id, { w, h }));
+      }
+      return;
     }
   }
 });
 
-function endDrag(e: PointerEvent): void {
-  if (!drag) return;
-  const d = drag;
-  drag = null;
-  canvas.classList.remove("panning");
-  try {
-    canvas.releasePointerCapture(e.pointerId);
-  } catch {
-    /* not captured */
+function endPointer(e: PointerEvent): void {
+  pointers.delete(e.pointerId);
+  if (!gesture) return;
+  const g = gesture;
+  if (g.kind === "pinch") {
+    if (pointers.size < 2) gesture = null;
+    return;
   }
-  if (d.kind === "move") {
-    const node = nodes.get(d.id);
-    node?.classList.remove("dragging");
-    if (d.moved) session.commit(doc.setProps(d.id, { x: d.x, y: d.y }));
-    else if (d.wasSelected && e.type === "pointerup") startEditing(d.id); // second tap edits
-  } else if (d.kind === "resize") {
-    const node = nodes.get(d.id);
-    if (node) session.commit(doc.setProps(d.id, { w: parseInt(node.style.width, 10), h: parseInt(node.style.height, 10) }));
+  gesture = null;
+  canvas.classList.remove("panning");
+  switch (g.kind) {
+    case "draw": {
+      if (g.raf) cancelAnimationFrame(g.raf);
+      const s = encodeStroke(g.pts, BRUSH_SIZE[g.brush] / 2 + 3);
+      session.commit(doc.createItem(g.id, { kind: "ink", brush: g.brush, color: g.color, x: s.x, y: s.y, w: s.w, h: s.h, d: s.d, z: topZ() }));
+      session.sendLiveInk({ stroke: g.id, brush: g.brush, color: g.color, pts: [], done: true });
+      pushStep(createdStep([g.id]));
+      $("empty").hidden = true;
+      return;
+    }
+    case "arrow": {
+      if (Math.hypot(g.b.x - g.a.x, g.b.y - g.a.y) * cam.z < 10) {
+        view.clearLive(g.id);
+        return;
+      }
+      const s = encodeStroke([{ ...g.a, p: 0.5 }, { ...g.b, p: 0.5 }], 20);
+      session.commit(doc.createItem(g.id, { kind: "arrow", color: style.arrowColor, x: s.x, y: s.y, w: s.w, h: s.h, d: s.d, z: topZ() }));
+      pushStep(createdStep([g.id]));
+      return;
+    }
+    case "erase":
+      if (g.erased.length) pushStep({ undo: () => g.erased.flatMap((id) => doc.restoreItem(id)), redo: () => g.erased.flatMap((id) => doc.deleteItem(id)) });
+      return;
+    case "move": {
+      view.nodes.get(g.id)?.classList.remove("dragging");
+      if (g.moved) setProps(g.id, { x: g.x, y: g.y }, false), pushStep({ undo: () => doc.setProps(g.id, { x: g.start.x, y: g.start.y }), redo: () => doc.setProps(g.id, { x: g.x, y: g.y }) });
+      else if (g.wasSelected && e.type === "pointerup") startEditing(g.id); // second tap edits
+      return;
+    }
+    case "resize":
+      session.commit(doc.setProps(g.id, { w: g.w, h: g.h }));
+      pushStep({ undo: () => doc.setProps(g.id, { w: g.start.w, h: g.start.h }), redo: () => doc.setProps(g.id, { w: g.w, h: g.h }) });
+      return;
   }
 }
-canvas.addEventListener("pointerup", endDrag);
-canvas.addEventListener("pointercancel", endDrag);
+canvas.addEventListener("pointerup", endPointer);
+canvas.addEventListener("pointercancel", (e) => {
+  pointers.delete(e.pointerId);
+  cancelGesture();
+  canvas.classList.remove("panning");
+});
+
+function eraseAt(x: number, y: number): void {
+  if (gesture?.kind !== "erase") return;
+  const tol = 10 / cam.z;
+  for (const [id, node] of view.nodes) {
+    const kind = node.dataset.kind;
+    if (kind !== "ink" && kind !== "arrow") continue;
+    const g = view.geom(id);
+    if (x < g.x - tol || y < g.y - tol || x > g.x + g.w + tol || y > g.y + g.h + tol) continue;
+    const s = decodeStroke(String(doc.prop(id, "d") ?? ""));
+    if (!s) continue;
+    const sx = s.w / g.w, sy = s.h / g.h;
+    const brush = String(doc.prop(id, "brush") ?? "pen") as Brush;
+    const reach = (BRUSH_SIZE[brush] ?? 3) / 2 + tol;
+    if (distanceToPolyline(s.pts, (x - g.x) * sx, (y - g.y) * sy) <= reach * Math.max(sx, sy)) {
+      gesture.erased.push(id);
+      session.commit(doc.deleteItem(id));
+    }
+  }
+}
 
 canvas.addEventListener("dblclick", (e) => {
-  // pointer capture on the canvas retargets click events to it, so hit-test the real point
   const hit = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
   if (hit?.closest("textarea")) return;
   const itemNode = hit?.closest<HTMLElement>(".item");
-  if (itemNode) return startEditing(itemNode.dataset.id!);
+  if (itemNode?.dataset.id) return startEditing(itemNode.dataset.id);
+  if (tool !== "select") return;
   const p = toWorld(e.clientX, e.clientY);
   e.preventDefault();
   startEditing(createAt("note", p.x, p.y));
 });
 
+// ================================================================== keyboard
+
 window.addEventListener("keydown", (e) => {
-  if (editing || (e.target as HTMLElement).closest("input, textarea")) return;
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const inField = (e.target as HTMLElement).closest("input, textarea, [contenteditable]");
+  if (inField) return;
+  const mod = e.metaKey || e.ctrlKey;
   const k = e.key.toLowerCase();
-  if (k === "v") setTool("select");
-  else if (k === "n") setTool("note");
-  else if (k === "r") setTool("rect");
-  else if (k === "o") setTool("ellipse");
-  else if ((k === "delete" || k === "backspace") && selected) deleteSelected();
-  else if (k === "enter" && selected) {
+  if (mod && k === "z") {
     e.preventDefault();
-    startEditing(selected);
-  } else if (k === "escape") {
+    return e.shiftKey ? redo() : undo();
+  }
+  if (mod && k === "y") {
+    e.preventDefault();
+    return redo();
+  }
+  if (mod || e.altKey) return;
+  if (k === " ") {
+    if (!spaceDown) {
+      spaceDown = true;
+      canvas.classList.add("space");
+    }
+    e.preventDefault();
+    return;
+  }
+  const t = TOOLS.find((x) => x.key.toLowerCase() === k);
+  if (t) return setTool(t.id);
+  if ((k === "delete" || k === "backspace") && selected) return deleteItems([selected]);
+  if (k === "enter" && selected) {
+    e.preventDefault();
+    return startEditing(selected);
+  }
+  if (k === "escape") {
     select(null);
-    setTool("select");
-  } else if (k.startsWith("arrow") && selected) {
+    return setTool("select");
+  }
+  if (k === "=" || k === "+") return zoomAt(cam.z * 1.25, innerWidth / 2, innerHeight / 2);
+  if (k === "-") return zoomAt(cam.z / 1.25, innerWidth / 2, innerHeight / 2);
+  if (e.key === "!" || (k === "1" && e.shiftKey)) return fitView(true);
+  if (k.startsWith("arrow") && selected) {
     e.preventDefault();
-    const g = geom(selected);
+    const g = view.geom(selected);
     const step = e.shiftKey ? 40 : 8;
     const dx = k === "arrowleft" ? -step : k === "arrowright" ? step : 0;
     const dy = k === "arrowup" ? -step : k === "arrowdown" ? step : 0;
-    session.commit(doc.setProps(selected, { x: g.x + dx, y: g.y + dy }));
-  } else return;
+    setProps(selected, { x: g.x + dx, y: g.y + dy });
+  }
+});
+window.addEventListener("keyup", (e) => {
+  if (e.key === " ") {
+    spaceDown = false;
+    canvas.classList.remove("space");
+  }
 });
 
-// ------------------------------------------------------------------ presence and cursors
+$("undoBtn").innerHTML = icon("undo");
+$("redoBtn").innerHTML = icon("redo");
+$("undoBtn").addEventListener("click", undo);
+$("redoBtn").addEventListener("click", redo);
+
+// ================================================================== images
+
+const filePick = $("filePick") as HTMLInputElement;
+function pickImage(): void {
+  filePick.value = "";
+  filePick.click();
+}
+filePick.addEventListener("change", () => {
+  const files = [...(filePick.files ?? [])];
+  files.forEach((f, i) => void addImage(f, innerWidth / 2 + i * 30, innerHeight / 2 + i * 30));
+});
+
+window.addEventListener("paste", (e) => {
+  if ((e.target as HTMLElement).closest("input, textarea")) return;
+  const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+  if (!files.length) return;
+  e.preventDefault();
+  files.forEach((f, i) => void addImage(f, innerWidth / 2 + i * 30, innerHeight / 2 + i * 30));
+});
+
+let dragDepth = 0;
+canvas.addEventListener("dragenter", (e) => {
+  if (![...(e.dataTransfer?.types ?? [])].includes("Files")) return;
+  dragDepth++;
+  $("drop").hidden = false;
+});
+canvas.addEventListener("dragleave", () => {
+  if (--dragDepth <= 0) {
+    dragDepth = 0;
+    $("drop").hidden = true;
+  }
+});
+canvas.addEventListener("dragover", (e) => e.preventDefault());
+canvas.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dragDepth = 0;
+  $("drop").hidden = true;
+  const files = [...(e.dataTransfer?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+  files.forEach((f, i) => void addImage(f, e.clientX + i * 30, e.clientY + i * 30));
+});
+
+/** Shrink big photos before upload: longest side 1600px, WebP. Animated GIFs are kept as they are. */
+async function prepareImage(file: File): Promise<{ blob: Blob; ext: "webp" | "jpg" | "png" | "gif"; w: number; h: number }> {
+  const bmp = await createImageBitmap(file);
+  const w0 = bmp.width, h0 = bmp.height;
+  if (file.type === "image/gif" && file.size <= 2_000_000) {
+    bmp.close();
+    return { blob: file, ext: "gif", w: w0, h: h0 };
+  }
+  const k = Math.min(1, 1600 / Math.max(w0, h0));
+  const w = Math.max(1, Math.round(w0 * k)), h = Math.max(1, Math.round(h0 * k));
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  c.getContext("2d")!.drawImage(bmp, 0, 0, w, h);
+  bmp.close();
+  for (const q of [0.86, 0.72, 0.55]) {
+    const blob = await new Promise<Blob | null>((r) => c.toBlob(r, "image/webp", q));
+    if (blob && blob.type === "image/webp" && blob.size <= 1_900_000) return { blob, ext: "webp", w, h };
+    if (!blob || blob.type !== "image/webp") break;
+  }
+  const jpg = await new Promise<Blob | null>((r) => c.toBlob(r, "image/jpeg", 0.8));
+  if (!jpg) throw new Error("This browser couldn't read that image.");
+  return { blob: jpg, ext: "jpg", w, h };
+}
+
+async function addImage(file: File, clientX: number, clientY: number): Promise<void> {
+  if (session.isPaused || !navigator.onLine) {
+    toast("Images need a connection. Reconnect, then add it again.");
+    return;
+  }
+  if (!file.type.startsWith("image/")) return;
+  let prepared: Awaited<ReturnType<typeof prepareImage>>;
+  try {
+    prepared = await prepareImage(file);
+  } catch {
+    toast("That file couldn't be opened as an image.", { tone: "error" });
+    return;
+  }
+  const maxW = 420 / Math.max(cam.z, 0.5);
+  const scale = Math.min(1, maxW / prepared.w);
+  const w = Math.round(prepared.w * scale), h = Math.round(prepared.h * scale);
+  const p = toWorld(clientX, clientY);
+  const id = newItemId();
+  session.commit(doc.createItem(id, { kind: "image", x: Math.round(p.x - w / 2), y: Math.round(p.y - h / 2), w, h, src: "", z: topZ() }));
+  const local = URL.createObjectURL(prepared.blob);
+  view.showLocalImage(id, local);
+  if (tool !== "select") setTool("select");
+  select(id);
+  $("empty").hidden = true;
+  try {
+    const path = await api.uploadImage(boardId, prepared.blob, prepared.ext);
+    session.commit(doc.setProps(id, { src: path }));
+    view.clearLocalImage(id);
+    pushStep(createdStep([id]));
+  } catch (err) {
+    session.commit(doc.deleteItem(id));
+    toast(err instanceof ApiError ? err.message : "The image couldn't be uploaded.", { tone: "error" });
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(local), 4000);
+  }
+}
+
+// ================================================================== presence, cursors, live ink
 
 const remoteCursors = new Map<string, Cursor & { node: HTMLElement }>();
 
@@ -470,16 +894,16 @@ function onRemoteCursor(c: Cursor): void {
   let rc = remoteCursors.get(c.replica);
   if (!rc) {
     const node = el("div", "cursor");
-    node.innerHTML = `<svg viewBox="0 0 24 24"><path d="M4 2l16 9-7 1.8L9.5 20z" stroke="#17191c" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
-    const tag = el("span", undefined, c.name);
-    node.append(tag);
+    node.innerHTML = `<svg viewBox="0 0 24 24"><path d="M4.5 2.5 19 10.6l-6.6 1.7-3.3 6.3z" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+    node.append(el("span", undefined, c.name));
     cursorsLayer.append(node);
     rc = { ...c, node };
     remoteCursors.set(c.replica, rc);
   }
   Object.assign(rc, c);
   rc.node.querySelector("path")!.setAttribute("fill", c.color);
-  (rc.node.querySelector("span") as HTMLElement).style.background = c.color;
+  rc.node.querySelector("span")!.style.background = c.color;
+  rc.node.style.opacity = "1";
   placeCursor(rc);
 }
 
@@ -487,94 +911,194 @@ function placeCursor(c: Cursor & { node: HTMLElement }): void {
   c.node.style.transform = `translate(${c.x * cam.z + cam.x}px, ${c.y * cam.z + cam.y}px)`;
 }
 
+const liveSeen = new Map<string, number>();
+function onRemoteInk(ink: LiveInk): void {
+  if (ink.done) {
+    setTimeout(() => view.clearLive(ink.stroke), 1500);
+    return;
+  }
+  const pts: Pt[] = [];
+  for (let i = 0; i + 2 < ink.pts.length; i += 3) pts.push({ x: ink.pts[i], y: ink.pts[i + 1], p: ink.pts[i + 2] });
+  if (!pts.length) return;
+  liveSeen.set(ink.stroke, Date.now());
+  view.setLive(ink.stroke, pts, ink.brush as Brush, ink.color);
+  const rc = remoteCursors.get(ink.replica);
+  if (rc) {
+    const last = pts[pts.length - 1];
+    onRemoteCursor({ ...rc, x: last.x, y: last.y, at: Date.now() });
+  }
+}
+
 setInterval(() => {
   const now = Date.now();
   for (const [k, c] of remoteCursors) {
-    const gone = !peers.some((p) => p.replica === k);
-    if (gone || now - c.at > 8000) {
+    if (!peers.some((p) => p.replica === k) || now - c.at > 10000) {
       c.node.remove();
       remoteCursors.delete(k);
-    }
+    } else if (now - c.at > 4000) c.node.style.opacity = "0.35";
   }
-}, 2000);
+  for (const [k, t] of liveSeen) if (now - t > 4000) (view.clearLive(k), liveSeen.delete(k));
+}, 1500);
 
 function renderPeers(): void {
   const box = $("peers");
-  const people = [meta, ...peers.filter((p) => p.replica !== me.replica)];
+  const people = [meta, ...peers.filter((p) => p.replica !== who.replica)];
   box.replaceChildren(
-    ...people.slice(0, 6).map((p, i) => {
+    ...people.slice(0, 5).map((p, i) => {
       const a = el("span", i === 0 ? "peer me" : "peer", initials(p.name));
       a.style.background = p.color;
       a.title = i === 0 ? `${p.name} (you)` : p.name;
       return a;
     }),
   );
-  if (people.length > 6) box.append(el("span", "peer", `+${people.length - 6}`));
+  if (people.length > 5) box.append(el("span", "peer", `+${people.length - 5}`));
   box.setAttribute("aria-label", `${people.length} ${people.length === 1 ? "person" : "people"} on this board`);
 }
 
-// ------------------------------------------------------------------ status
+// ================================================================== status
 
 let lastStats: SyncStats | null = null;
 let lastStatus: SyncStatus = "loading";
+const offlineBtn = $("offlineBtn");
 
 function renderStatus(s: SyncStatus): void {
   lastStatus = s;
-  const pill = $("status");
-  pill.dataset.s = s;
+  $("status").dataset.s = s;
   const unsent = lastStats?.unsent ?? 0;
   const label: Record<SyncStatus, string> = {
     loading: "Loading",
-    live: "Live",
-    connecting: "Connecting…",
+    live: peers.length ? `Live with ${peers.length}` : "Live",
+    connecting: "Connecting",
     offline: unsent ? `Offline · ${unsent} to send` : "Offline",
-    paused: unsent ? `Offline by you · ${unsent} queued` : "Offline by you",
+    paused: unsent ? `Offline · ${unsent} queued` : "You're offline",
     error: "Sync error",
   };
   $("statusText").textContent = label[s];
-  const btn = $("offlineBtn");
-  btn.setAttribute("aria-pressed", String(s === "paused"));
-  btn.querySelector("span")!.textContent = s === "paused" ? "Reconnect" : "Go offline";
+  offlineBtn.setAttribute("aria-pressed", String(s === "paused"));
+  offlineBtn.innerHTML = s === "paused" ? icon("wifiOff") : icon("wifi");
+  offlineBtn.setAttribute("aria-label", s === "paused" ? "Reconnect" : "Go offline");
+  offlineBtn.title = s === "paused" ? "Reconnect and merge" : "Go offline (test offline editing)";
 }
 
 function renderStats(s: SyncStats): void {
-  const prevHash = lastStats?.hash;
+  const prev = lastStats?.hash;
   lastStats = s;
   renderStatus(lastStatus);
   renderFingerprint($("fpSwatches"), $("fpText"), s.hash);
-  if (prevHash && prevHash !== s.hash) {
+  if (prev && prev !== s.hash) {
     const fp = $("fingerprint");
     fp.classList.remove("flash");
     void fp.offsetWidth;
     fp.classList.add("flash");
   }
-  $("syncInfo").textContent = `log #${s.lastSeq} · unsent ${s.unsent}${s.pending ? ` · waiting ${s.pending}` : ""}`;
+  $("syncInfo").textContent = `log #${s.lastSeq}${s.unsent ? ` · ${s.unsent} unsent` : ""}${s.pending ? ` · ${s.pending} waiting` : ""}`;
+  schedulePreview();
 }
 
-$("offlineBtn").addEventListener("click", () => {
+offlineBtn.addEventListener("click", () => {
   const going = !session.isPaused;
   session.setPaused(going);
-  toast(going ? "You're offline. Keep editing; it all merges when you reconnect." : "Back online. Merging…");
+  toast(going ? "You're offline. Keep drawing; it all merges when you reconnect." : "Back online. Merging…");
 });
 
-$("shareBtn").addEventListener("click", async () => {
+const shareBtn = $("shareBtn");
+shareBtn.innerHTML = `${icon("link")}<span>Share</span>`;
+shareBtn.addEventListener("click", async () => {
   const url = `${location.origin}/b/${boardId}`;
   try {
     await navigator.clipboard.writeText(url);
-    toast("Link copied. Anyone with it can edit.");
+    toast("Link copied. Anyone with it can draw on this board.");
   } catch {
-    toast(`Copy this link: ${url}`);
+    toast(`Share this link: ${url}`);
   }
 });
 
-let toastTimer: ReturnType<typeof setTimeout> | null = null;
-function toast(text: string): void {
-  const t = $("toast");
-  t.textContent = text;
-  t.hidden = false;
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), 3200);
+// ================================================================== title, saving, previews
+
+const titleInput = $("title") as HTMLInputElement;
+let savedTitle = "";
+async function commitTitle(): Promise<void> {
+  const next = titleInput.value.trim();
+  if (!next) {
+    titleInput.value = savedTitle;
+    return;
+  }
+  if (next === savedTitle) return;
+  try {
+    savedTitle = await api.rename(boardId, next);
+    titleInput.value = savedTitle;
+    document.title = `${savedTitle} · Lattice`;
+    rememberBoard(boardId, savedTitle);
+  } catch (e) {
+    titleInput.value = savedTitle;
+    toast(e instanceof ApiError ? e.message : "Couldn't rename the board.", { tone: "error" });
+  }
+}
+titleInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") titleInput.blur();
+  if (e.key === "Escape") {
+    titleInput.value = savedTitle;
+    titleInput.blur();
+  }
+});
+titleInput.addEventListener("blur", () => void commitTitle());
+
+let previewTimer: ReturnType<typeof setTimeout> | null = null;
+let previewHash = "";
+function schedulePreview(): void {
+  if (previewTimer) clearTimeout(previewTimer);
+  previewTimer = setTimeout(savePreview, 5000);
+}
+function savePreview(): void {
+  if (session.isPaused || !lastStats || lastStats.hash === previewHash) return;
+  const svg = boardPreview(doc);
+  if (!svg) return;
+  previewHash = lastStats.hash;
+  api.setPreview(boardId, svg).catch(() => (previewHash = ""));
 }
 
-window.addEventListener("resize", () => applyCamera());
+// ================================================================== boot
+
+function fatal(title: string, text: string): void {
+  $("fatalTitle").textContent = title;
+  $("fatalText").textContent = text;
+  $("fatal").hidden = false;
+}
+
+async function boot(): Promise<void> {
+  mountAccount($("account"), { compact: true });
+  onAuthChange((u) => {
+    if (u) api.saveBoard(boardId).catch(() => {});
+  });
+  setTool("select");
+  paintDots();
+  renderUndo();
+  renderStatus("loading");
+  doc.onChange(() => ($("empty").hidden = doc.itemIds().length > 0));
+  try {
+    await session.start();
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) fatal("This board doesn't exist.", "The link may be mistyped, or the board was never created.");
+    else fatal("Couldn't open this board.", err instanceof Error ? err.message : "Check your connection and try again.");
+    return;
+  }
+  const info = await api.board(boardId).catch(() => null);
+  savedTitle = info?.title ?? "Untitled board";
+  titleInput.value = savedTitle;
+  titleInput.disabled = false;
+  document.title = `${savedTitle} · Lattice`;
+  rememberBoard(boardId, savedTitle);
+  $("empty").hidden = doc.itemIds().length > 0;
+  fitView();
+  renderPeers();
+  movePill();
+}
+
+window.addEventListener("pagehide", () => {
+  savePreview();
+  session.stop();
+});
+
+if (!UUID_RE.test(boardId)) fatal("This link isn't a board.", "Board links end in a long code after /b/. Open one of your boards or start a new one.");
+else void boot();
 applyCamera();

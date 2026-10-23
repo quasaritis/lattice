@@ -38,7 +38,11 @@ export interface Change {
 export type Listener = (change: Change, source: "local" | "remote") => void;
 
 export const MAX_TEXT = 2000;
-export const ITEM_FIELDS = ["kind", "x", "y", "w", "h", "color", "z"] as const;
+export const ITEM_FIELDS = ["kind", "x", "y", "w", "h", "color", "z", "src", "d", "brush"] as const;
+export const ITEM_KINDS = ["note", "rect", "ellipse", "text", "image", "ink", "arrow"] as const;
+export const BRUSHES = ["pen", "marker", "hl"] as const;
+/** Longest stroke we accept, in characters of encoded points (see draw/stroke.ts). */
+export const MAX_STROKE = 9000;
 
 export class Doc {
   readonly clock: HLC;
@@ -109,6 +113,26 @@ export class Doc {
   setProps(item: string, fields: Record<string, Json>): Op[] {
     const ops: Op[] = Object.entries(fields).map(([f, v]) => ({ k: "set", id: this.clock.now(), key: `${item}/${f}`, v }));
     return this.applyLocal(ops);
+  }
+
+  /**
+   * Bring a deleted item back (undo of a delete). The OR-Set just gets a fresh add with a
+   * new tag; the item's LWW props and RGA text were never thrown away, so it returns intact.
+   */
+  restoreItem(item: string): Op[] {
+    if (this.items.has(item)) return [];
+    return this.applyLocal([{ k: "add", id: this.clock.now(), item }]);
+  }
+
+  /**
+   * Re-assert that an item exists, with a fresh OR-Set tag. Called when someone starts
+   * editing an item: if another replica deletes it concurrently, that delete can only remove
+   * the tags it had seen, so the item (and the edit) survives. This is the paper's add-wins
+   * rule, applied to "I'm working on this".
+   */
+  touchItem(item: string): Op[] {
+    if (!this.items.has(item)) return [];
+    return this.applyLocal([{ k: "add", id: this.clock.now(), item }]);
   }
 
   deleteItem(item: string): Op[] {
@@ -304,7 +328,7 @@ export function isOp(x: unknown): x is Op {
     case "set": {
       if (typeof o.key !== "string") return false;
       const [item, field, extra] = o.key.split("/");
-      return ITEM_RE.test(item ?? "") && (ITEM_FIELDS as readonly string[]).includes(field ?? "") && extra === undefined && isSmallJson(o.v);
+      return ITEM_RE.test(item ?? "") && extra === undefined && isFieldValue(field ?? "", o.v);
     }
     case "ins":
       return typeof o.item === "string" && ITEM_RE.test(o.item) && typeof o.after === "string" && (o.after === ROOT || ID_RE.test(o.after)) && typeof o.text === "string" && o.text.length > 0 && Array.from(o.text).length <= MAX_TEXT;
@@ -315,11 +339,34 @@ export function isOp(x: unknown): x is Op {
   }
 }
 
-function isSmallJson(v: unknown): boolean {
-  if (v === null || typeof v === "boolean") return true;
-  if (typeof v === "number") return Number.isFinite(v);
-  if (typeof v === "string") return v.length <= 64;
-  return false;
+const SRC_RE = /^[0-9a-f-]{36}\/[A-Za-z0-9_-]{6,64}\.(webp|jpe?g|png|gif)$/;
+const STROKE_RE = /^\d{1,6},\d{1,6}:\d{1,6},\d{1,6},\d(;-?\d{1,6},-?\d{1,6},\d)*$/;
+const COLOR_RE = /^[a-z]{2,12}$/;
+
+/** Every field has its own shape, so a peer can't smuggle arbitrary data into the board. */
+export function isFieldValue(field: string, v: unknown): boolean {
+  if (v === null) return true;
+  switch (field) {
+    case "x":
+    case "y":
+    case "z":
+      return typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= 1e7;
+    case "w":
+    case "h":
+      return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1e5;
+    case "kind":
+      return typeof v === "string" && (ITEM_KINDS as readonly string[]).includes(v);
+    case "brush":
+      return typeof v === "string" && (BRUSHES as readonly string[]).includes(v);
+    case "color":
+      return typeof v === "string" && COLOR_RE.test(v);
+    case "src":
+      return typeof v === "string" && (v === "" || SRC_RE.test(v));
+    case "d":
+      return typeof v === "string" && v.length <= MAX_STROKE && STROKE_RE.test(v);
+    default:
+      return false;
+  }
 }
 
 export function fnv1a(s: string): string {

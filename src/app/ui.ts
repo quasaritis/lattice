@@ -1,18 +1,16 @@
-/** Small shared UI helpers: identity, inks, the state fingerprint. */
+/** Small shared UI pieces: identity, the state fingerprint, toasts, DOM helpers. */
+import { PEER_COLORS } from "./palette.js";
 
-export const INKS: Record<string, { fill: string; misreg: string; label: string }> = {
-  sun: { fill: "var(--sun)", misreg: "var(--rose)", label: "Yellow" },
-  mint: { fill: "var(--mint)", misreg: "var(--sky)", label: "Green" },
-  sky: { fill: "var(--sky)", misreg: "var(--lilac)", label: "Aqua" },
-  rose: { fill: "var(--rose)", misreg: "var(--sun)", label: "Pink" },
-  lilac: { fill: "var(--lilac)", misreg: "var(--rose)", label: "Violet" },
-  paper: { fill: "var(--white)", misreg: "var(--sky)", label: "White" },
-};
-export const INK_KEYS = Object.keys(INKS);
+export function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
 
-const SWATCH_HEX = ["#ffe03d", "#3fbf7f", "#5ec3e3", "#ff5fae", "#a989df", "#fbfbf8", "#ff8a3d", "#2f4fd0"];
+const SWATCH_HEX = ["#17191e", "#1f4fd6", "#df3a2e", "#138a4f", "#ea7a14", "#7444d0", "#f2cf00", "#c2187a"];
 
-/** Render a hash as four ink swatches + the hex, so two screens can be compared at a glance. */
+/** Render a hash as four marker dots + the hex, so two screens can be compared at a glance. */
 export function renderFingerprint(swatches: HTMLElement, text: HTMLElement, hash: string): void {
   if (text.textContent === hash) return;
   text.textContent = hash;
@@ -27,7 +25,6 @@ export function renderFingerprint(swatches: HTMLElement, text: HTMLElement, hash
 
 const ADJ = ["Swift", "Quiet", "Brave", "Lucky", "Sunny", "Clever", "Gentle", "Bold", "Witty", "Calm", "Zesty", "Nimble"];
 const NOUN = ["Otter", "Heron", "Lynx", "Panda", "Falcon", "Koala", "Gecko", "Tiger", "Mango", "Comet", "Pixel", "Lotus"];
-export const PEER_COLORS = ["#ffe03d", "#3fbf7f", "#5ec3e3", "#ff5fae", "#a989df", "#ff8a3d"];
 
 function randomId(len: number): string {
   const a = new Uint8Array(len);
@@ -44,8 +41,8 @@ function storage(kind: "local" | "session"): Storage | null {
 }
 
 /**
- * Who am I? The display name is per browser. The replica id is per tab, because two tabs
- * are two replicas: they must never mint the same op id.
+ * Who am I? The display name is per browser (or the account name when signed in). The
+ * replica id is per tab, because two tabs are two replicas and must never mint the same op id.
  */
 export function identity(): { replica: string; name: string; color: string } {
   const ls = storage("local");
@@ -70,7 +67,7 @@ export function identity(): { replica: string; name: string; color: string } {
 
 export function initials(name: string): string {
   return name
-    .split(/\s+/)
+    .split(/[\s._-]+/)
     .map((w) => w[0] ?? "")
     .join("")
     .slice(0, 2)
@@ -85,9 +82,60 @@ export function cpToUtf16(s: string, cp: number): number {
   return Array.from(s).slice(0, cp).join("").length;
 }
 
-export function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text !== undefined) e.textContent = text;
-  return e;
+// ------------------------------------------------------------------ toasts
+
+let stack: HTMLElement | null = null;
+
+/** Stacked toasts: newest in front, older ones tuck behind it. */
+export function toast(text: string, opts: { action?: { label: string; run: () => void }; tone?: "default" | "error" } = {}): void {
+  if (!stack) {
+    stack = el("ol", "toasts");
+    stack.setAttribute("aria-live", "polite");
+    stack.setAttribute("aria-label", "Notifications");
+    document.body.append(stack);
+  }
+  const t = el("li", `toast${opts.tone === "error" ? " error" : ""}`);
+  const msg = el("span", "toast-text", text);
+  t.append(msg);
+  if (opts.action) {
+    const b = el("button", "toast-action", opts.action.label);
+    b.type = "button";
+    b.addEventListener("click", () => {
+      opts.action!.run();
+      dismiss();
+    });
+    t.append(b);
+  }
+  stack.prepend(t);
+  const items = [...stack.children] as HTMLElement[];
+  items.slice(3).forEach((x) => x.remove());
+  layout();
+  let timer = setTimeout(dismiss, opts.action ? 5200 : 3200);
+  t.addEventListener("pointerenter", () => clearTimeout(timer));
+  t.addEventListener("pointerleave", () => (timer = setTimeout(dismiss, 1600)));
+  function dismiss() {
+    clearTimeout(timer);
+    if (!t.isConnected) return;
+    t.classList.add("out");
+    setTimeout(() => {
+      t.remove();
+      layout();
+    }, 180);
+  }
+}
+
+function layout(): void {
+  if (!stack) return;
+  [...stack.children].forEach((c, i) => {
+    const e = c as HTMLElement;
+    e.style.setProperty("--i", String(i));
+    e.inert = i > 0;
+  });
+}
+
+/** Run a View Transition when the browser has one and motion is welcome. */
+export function transition(fn: () => void): void {
+  const doc = document as Document & { startViewTransition?: (cb: () => void) => unknown };
+  if (doc.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches) doc.startViewTransition(fn);
+  else fn();
 }
