@@ -4,3 +4,5 @@ dist/
 .vercel/
 .DS_Store
 *.log
+shots/
+supabase/functions/*/shots/
