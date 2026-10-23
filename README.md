@@ -7,7 +7,7 @@ Built from scratch on the CRDT paper, with no CRDT library and zero runtime depe
 
 > Marc Shapiro, Nuno Preguiça, Carlos Baquero, Marek Zawirski. **Conflict-free Replicated Data Types.** 13th International Symposium on Stabilization, Safety, and Security of Distributed Systems (SSS 2011), LNCS 6976, pp. 386–400. Springer. Extended version: *A comprehensive study of Convergent and Commutative Replicated Data Types*, INRIA RR-7506, 2011.
 
-**Live:** https://lattice-byditors.vercel.app · **Lab (break the network yourself):** https://lattice-byditors.vercel.app/lab
+**Live:** https://quasarboard.vercel.app · **Lab (break the network yourself):** https://quasarboard.vercel.app/lab
 
 ---
 
