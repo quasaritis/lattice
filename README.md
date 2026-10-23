@@ -13,6 +13,7 @@ Built from scratch on the CRDT paper, with no CRDT library and zero runtime depe
 
 - **Pen** with real pressure from a stylus (simulated from speed with a mouse), a **marker**, and a **highlighter** that sits under your writing
 - **Arrows**, an **eraser** that removes whole strokes, **sticky notes**, **text**, **boxes** and **ellipses**
+- **Text sizes** S / M / L / XL for free text and for writing inside notes and shapes (Ctrl+Shift+< and > to step); free text boxes grow with what you type
 - **Photos**: pick a file, paste a screenshot, or drag one in. Images are resized in the browser (WebP, max 1600 px) and uploaded to Supabase Storage; the board only stores the path
 - Everyone's **cursor and in-progress stroke** show up live while they draw
 - **Undo / redo** (Ctrl+Z, Ctrl+Shift+Z) that only touches your own changes
@@ -28,7 +29,7 @@ Most collaborative apps send every edit to a server, and the server decides who 
 | Board feature | CRDT (paper section) | Why that one |
 |---|---|---|
 | Which items exist (notes, strokes, images…) | **OR-Set**, Observed-Remove Set (Spec. 15) | A delete only removes the tags the deleter has *seen*. Every edit re-asserts the item with a fresh tag, so if someone edits a note while you delete it offline, the note survives with their edit. |
-| Position, size, colour, z-order, stroke data, image path | **LWW-Map** of Last-Writer-Wins registers (Spec. 8–9) | Each field carries a timestamp; the highest wins. Concurrent drags converge without a server. A stroke is one compact field (`W,H:x,y,p;dx,dy,p…`), so it arrives whole or not at all. |
+| Position, size, colour, text size, z-order, stroke data, image path | **LWW-Map** of Last-Writer-Wins registers (Spec. 8–9) | Each field carries a timestamp; the highest wins. Concurrent drags converge without a server. A stroke is one compact field (`W,H:x,y,p;dx,dy,p…`), so it arrives whole or not at all. |
 | Text inside notes | **RGA**, Replicated Growable Array (Spec. 19) | Every character has a unique id and an anchor ("typed after X"). Deleted characters stay as tombstones so concurrent inserts still have an anchor. Two people typing at the same spot never interleave letter by letter. |
 | Timestamps | **Hybrid Logical Clock** (Kulkarni et al., 2014) | The paper needs timestamps that are unique, totally ordered and consistent with causality. HLCs give that while staying close to wall-clock time. |
 

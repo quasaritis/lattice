@@ -38,7 +38,7 @@ export interface Change {
 export type Listener = (change: Change, source: "local" | "remote") => void;
 
 export const MAX_TEXT = 2000;
-export const ITEM_FIELDS = ["kind", "x", "y", "w", "h", "color", "z", "src", "d", "brush"] as const;
+export const ITEM_FIELDS = ["kind", "x", "y", "w", "h", "color", "z", "src", "d", "brush", "fs"] as const;
 export const ITEM_KINDS = ["note", "rect", "ellipse", "text", "image", "ink", "arrow"] as const;
 export const BRUSHES = ["pen", "marker", "hl"] as const;
 /** Longest stroke we accept, in characters of encoded points (see draw/stroke.ts). */
@@ -354,6 +354,8 @@ export function isFieldValue(field: string, v: unknown): boolean {
     case "w":
     case "h":
       return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1e5;
+    case "fs":
+      return typeof v === "number" && Number.isFinite(v) && v >= 8 && v <= 240;
     case "kind":
       return typeof v === "string" && (ITEM_KINDS as readonly string[]).includes(v);
     case "brush":

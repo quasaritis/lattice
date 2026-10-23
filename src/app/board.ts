@@ -70,6 +70,7 @@ const style = {
   penBrush: (prefs.penBrush === "marker" ? "marker" : "pen") as Brush,
   hlColor: HL_COLORS.includes(prefs.hlColor) ? prefs.hlColor : "yellow",
   arrowColor: PEN_COLORS.includes(prefs.arrowColor) ? prefs.arrowColor : "ink",
+  textSize: (["S", "M", "L", "XL"].includes(prefs.textSize) ? prefs.textSize : "M") as SizeKey,
 };
 function savePrefs() {
   try {
@@ -143,6 +144,69 @@ function paintDots(): void {
   dot("arrow", inkHex(style.arrowColor));
 }
 
+// ================================================================== text size
+
+const TEXT_KINDS = new Set(["note", "rect", "ellipse", "text"]);
+type SizeKey = "S" | "M" | "L" | "XL";
+const SIZE_KEYS: SizeKey[] = ["S", "M", "L", "XL"];
+/** Free text is a heading by default; text inside notes and shapes is body copy. */
+const SIZES: Record<"text" | "body", Record<SizeKey, number>> = {
+  text: { S: 18, M: 26, L: 40, XL: 64 },
+  body: { S: 15, M: 20, L: 30, XL: 44 },
+};
+const sizeScale = (kind: string) => SIZES[kind === "text" ? "text" : "body"];
+const fontSize = (id: string) => num(doc.prop(id, "fs"), sizeScale(view.kind(id)).M);
+const sizeKeyOf = (id: string): SizeKey | null => SIZE_KEYS.find((k) => sizeScale(view.kind(id))[k] === fontSize(id)) ?? null;
+
+/** Change an item's text size. Free text grows or shrinks its box with it, like resizing a heading. */
+function setFontSize(id: string, fs: number): void {
+  const kind = view.kind(id);
+  const old = fontSize(id);
+  if (fs === old) return;
+  const fields: Record<string, Json> = { fs };
+  if (kind === "text") {
+    const g = view.geom(id);
+    const k = fs / old;
+    fields.w = Math.round(Math.max(60, g.w * k));
+    fields.h = Math.round(Math.max(fs * 1.28 + 8, g.h * k));
+  }
+  setProps(id, fields);
+}
+
+function stepFontSize(id: string, dir: 1 | -1): void {
+  const scale = sizeScale(view.kind(id));
+  const cur = fontSize(id);
+  const steps = SIZE_KEYS.map((k) => scale[k]);
+  const next = dir > 0 ? steps.find((v) => v > cur) : [...steps].reverse().find((v) => v < cur);
+  if (next !== undefined) setFontSize(id, next);
+}
+
+function sizeControl(pressed: SizeKey | null, onPick: (k: SizeKey) => void): HTMLElement {
+  const wrap = el("div", "sizes");
+  wrap.setAttribute("role", "group");
+  wrap.setAttribute("aria-label", "Text size");
+  const names: Record<SizeKey, string> = { S: "Small", M: "Medium", L: "Large", XL: "Extra large" };
+  for (const k of SIZE_KEYS) {
+    const b = el("button", "size-btn");
+    b.type = "button";
+    b.textContent = k;
+    b.setAttribute("aria-pressed", String(pressed === k));
+    b.setAttribute("aria-label", `${names[k]} text`);
+    b.title = `${names[k]} text (Ctrl+Shift+< / >)`;
+    b.addEventListener("click", () => onPick(k));
+    wrap.append(b);
+  }
+  return wrap;
+}
+
+/** Free text boxes grow to fit what's typed, so nothing is cut off at a big size. */
+function fitTextBox(id: string, measure: HTMLElement): void {
+  if (view.kind(id) !== "text") return;
+  const need = Math.ceil(measure.scrollHeight);
+  const g = view.geom(id);
+  if (need > g.h + 1) setProps(id, { h: need }, false);
+}
+
 // ================================================================== options bar (colours)
 
 const optionsBar = $("options");
@@ -181,6 +245,13 @@ function renderOptions(): void {
     optionsBar.hidden = false;
     return;
   }
+  if (tool === "text") {
+    for (const c of PEN_COLORS) add(swatch(INK[c].hex, INK[c].label, style.penColor === c, () => ((style.penColor = c), savePrefs(), paintDots(), renderOptions())));
+    add(el("span", "sep"));
+    add(sizeControl(style.textSize, (k) => ((style.textSize = k), savePrefs(), renderOptions())));
+    optionsBar.hidden = false;
+    return;
+  }
   if (tool === "select" && selected && doc.hasItem(selected)) {
     const id = selected;
     const kind = view.kind(id);
@@ -190,6 +261,10 @@ function renderOptions(): void {
     } else if (kind !== "image") {
       const list = (kind === "ink" && doc.prop(id, "brush") === "hl") ? HL_COLORS : PEN_COLORS;
       for (const c of list) add(swatch(INK[c].hex, INK[c].label, (current || "ink") === c, () => setProps(id, { color: c })));
+    }
+    if (TEXT_KINDS.has(kind)) {
+      if (optionsBar.childElementCount) add(el("span", "sep"));
+      add(sizeControl(sizeKeyOf(id), (k) => setFontSize(id, sizeScale(kind)[k])));
     }
     if (optionsBar.childElementCount) add(el("span", "sep"));
     const del = el("button", "icon-btn");
@@ -369,7 +444,6 @@ function bringToFront(id: string): void {
   for (const other of doc.itemIds()) if (other !== id && num(doc.prop(other, "z"), 0) >= z) return void session.commit(doc.setProps(id, { z: topZ() }));
 }
 
-const TEXT_KINDS = new Set(["note", "rect", "ellipse", "text"]);
 
 function startEditing(id: string): void {
   const node = view.nodes.get(id);
@@ -395,10 +469,17 @@ function startEditing(id: string): void {
     session.commit(doc.editText(id, ta.value));
     if (ta.value !== doc.text(id)) ta.value = doc.text(id);
     track();
+    fitTextBox(id, ta);
   });
   for (const ev of ["keyup", "mouseup", "select", "focus"]) ta.addEventListener(ev, track);
   ta.addEventListener("keydown", (e) => {
     e.stopPropagation();
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === ">" || e.key === "." || e.key === "<" || e.key === ",")) {
+      e.preventDefault();
+      stepFontSize(id, e.key === ">" || e.key === "." ? 1 : -1);
+      requestAnimationFrame(() => fitTextBox(id, ta));
+      return;
+    }
     if (e.key === "Escape" || (e.key === "Enter" && (e.metaKey || e.ctrlKey))) {
       e.preventDefault();
       stopEditing();
@@ -439,9 +520,12 @@ function stopEditing(): void {
 
 function createAt(kind: "note" | "text" | "rect" | "ellipse", x: number, y: number): string {
   const id = newItemId();
-  const size = kind === "note" ? { w: 220, h: 180 } : kind === "rect" ? { w: 240, h: 140 } : kind === "ellipse" ? { w: 220, h: 160 } : { w: 280, h: 46 };
+  const fs = SIZES.text[style.textSize];
+  const k = fs / SIZES.text.M;
+  const size = kind === "note" ? { w: 220, h: 180 } : kind === "rect" ? { w: 240, h: 140 } : kind === "ellipse" ? { w: 220, h: 160 } : { w: Math.round(280 * k), h: Math.round(fs * 1.28 + 13) };
   const color = kind === "note" ? "sun" : kind === "rect" ? "sky" : kind === "ellipse" ? "rose" : style.penColor;
-  session.commit(doc.createItem(id, { kind, x: Math.round(x - size.w / 2), y: Math.round(y - size.h / 2), ...size, color, z: topZ() }));
+  const extra = kind === "text" && style.textSize !== "M" ? { fs } : {};
+  session.commit(doc.createItem(id, { kind, x: Math.round(x - size.w / 2), y: Math.round(y - size.h / 2), ...size, color, z: topZ(), ...extra }));
   view.nodes.get(id)?.classList.add("arrive");
   pushStep(createdStep([id]));
   return id;
@@ -738,6 +822,10 @@ window.addEventListener("keydown", (e) => {
   if (mod && k === "y") {
     e.preventDefault();
     return redo();
+  }
+  if (mod && e.shiftKey && selected && TEXT_KINDS.has(view.kind(selected)) && [">", ".", "<", ","].includes(e.key)) {
+    e.preventDefault();
+    return stepFontSize(selected, e.key === ">" || e.key === "." ? 1 : -1);
   }
   if (mod || e.altKey) return;
   if (k === " ") {

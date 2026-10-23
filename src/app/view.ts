@@ -210,6 +210,9 @@ export class BoardView {
       }
       return;
     }
+    const fs = this.doc.prop(id, "fs");
+    if (typeof fs === "number") node.style.setProperty("--fs", `${fs}px`);
+    else node.style.removeProperty("--fs");
     if (kind === "note" || kind === "rect" || kind === "ellipse") node.style.setProperty("--fill", paperHex(color));
     if (kind === "text") node.style.setProperty("--fill", inkHex(color ?? "ink"));
   }
