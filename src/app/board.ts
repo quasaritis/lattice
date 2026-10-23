@@ -969,7 +969,7 @@ filePick.addEventListener("change", () => {
 });
 
 window.addEventListener("paste", (e) => {
-  if ((e.target as HTMLElement).closest("input, textarea")) return;
+  if ((e.target as Element | null)?.closest?.("input, textarea")) return;
   const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/") || f.type.startsWith("video/"));
   if (!files.length) return;
   e.preventDefault();
