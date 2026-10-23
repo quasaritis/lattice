@@ -1,27 +1,12 @@
-// Generated from src/crdt by scripts/copy-crdt.mjs. Do not edit.
-/**
- * A Lattice board document: the three CRDTs from the paper composed together.
- *
- *   items  OR-Set     which notes and shapes exist (add-wins on concurrent delete)
- *   props  LWW-Map    "<item>/<field>" -> value: position, size, rotation, colour, kind, z-order
- *   texts  RGA        one sequence per note for its text
- *
- * It works both ways the paper describes:
- *   - op-based (CmRDT): local edits produce small ops that are broadcast and applied
- *     downstream. Ops whose causal dependencies have not arrived yet are buffered.
- *     Applying an op twice does nothing, so the transport may duplicate and reorder freely.
- *   - state-based (CvRDT): `toState()` / `merge()` exchange whole states. Used for
- *     snapshots, so a new client loads one snapshot plus the ops after it.
- */
+// Generated from src/crdt/doc.ts by scripts/copy-crdt.mjs. Do not edit.
 import { HLC } from "./hlc.js";
 import { LWWMap } from "./lww.js";
 import { ORSet } from "./orset.js";
 import { RGA, ROOT, runIds } from "./rga.js";
 export const MAX_TEXT = 2000;
 export const ITEM_FIELDS = ["kind", "x", "y", "w", "h", "color", "z", "src", "d", "brush", "fs", "r"];
-export const ITEM_KINDS = ["note", "rect", "ellipse", "text", "image", "ink", "arrow"];
+export const ITEM_KINDS = ["note", "rect", "ellipse", "text", "image", "ink", "arrow", "video"];
 export const BRUSHES = ["pen", "marker", "hl"];
-/** Longest stroke we accept, in characters of encoded points (see draw/stroke.ts). */
 export const MAX_STROKE = 9000;
 export class Doc {
     clock;
@@ -31,7 +16,6 @@ export class Doc {
     applied = new Set();
     pending = new Map();
     listeners = new Set();
-    /** Ops that were well-formed but could not be applied safely. */
     rejected = [];
     constructor(replica, physicalNow) {
         this.clock = new HLC(replica, physicalNow);
@@ -39,7 +23,6 @@ export class Doc {
     get replica() {
         return this.clock.replica;
     }
-    // ------------------------------------------------------------------ reading
     itemIds() {
         return this.items.values();
     }
@@ -58,7 +41,6 @@ export class Doc {
             this.texts.set(item, (r = new RGA()));
         return r;
     }
-    /** Ops waiting for their causal dependencies. */
     get pendingCount() {
         return this.pending.size;
     }
@@ -69,7 +51,6 @@ export class Doc {
         this.listeners.add(fn);
         return () => this.listeners.delete(fn);
     }
-    // ------------------------------------------------------------------ local edits (each returns the ops to broadcast)
     createItem(item, fields, text = "") {
         const ops = [{ k: "add", id: this.clock.now(), item }];
         for (const [f, v] of Object.entries(fields))
@@ -82,21 +63,11 @@ export class Doc {
         const ops = Object.entries(fields).map(([f, v]) => ({ k: "set", id: this.clock.now(), key: `${item}/${f}`, v }));
         return this.applyLocal(ops);
     }
-    /**
-     * Bring a deleted item back (undo of a delete). The OR-Set just gets a fresh add with a
-     * new tag; the item's LWW props and RGA text were never thrown away, so it returns intact.
-     */
     restoreItem(item) {
         if (this.items.has(item))
             return [];
         return this.applyLocal([{ k: "add", id: this.clock.now(), item }]);
     }
-    /**
-     * Re-assert that an item exists, with a fresh OR-Set tag. Called when someone starts
-     * editing an item: if another replica deletes it concurrently, that delete can only remove
-     * the tags it had seen, so the item (and the edit) survives. This is the paper's add-wins
-     * rule, applied to "I'm working on this".
-     */
     touchItem(item) {
         if (!this.items.has(item))
             return [];
@@ -108,10 +79,6 @@ export class Doc {
             return [];
         return this.applyLocal([{ k: "rem", id: this.clock.now(), item, tags }]);
     }
-    /**
-     * Turn "the note's text is now `next`" into RGA ops, using the common prefix and suffix
-     * with the current text. Indexes are in code points, matching how RGA stores characters.
-     */
     editText(item, next) {
         const rga = this.rga(item);
         const prev = Array.from(rga.text());
@@ -136,12 +103,6 @@ export class Doc {
         }
         return this.applyLocal(ops);
     }
-    // ------------------------------------------------------------------ op-based replication
-    /**
-     * Apply ops from another replica. Safe with duplicates and any delivery order:
-     * ops whose dependencies are missing wait in a buffer until they can apply.
-     * Returns the number of ops newly applied.
-     */
     applyRemote(ops) {
         const change = { items: new Set(), texts: new Set() };
         let n = 0;
@@ -154,8 +115,6 @@ export class Doc {
                 continue;
             this.pending.set(op.id, op);
         }
-        // Drain the buffer until no more ops become ready. Ops are tried oldest-first,
-        // which is usually causal order already, so this rarely needs more than one pass.
         let progress = true;
         while (progress && this.pending.size) {
             progress = false;
@@ -169,8 +128,6 @@ export class Doc {
                     this.effect(op, change);
                 }
                 catch (err) {
-                    // A malformed or hostile op (clock far in the future, reused tag, anchor newer than
-                    // the insert). Drop it rather than let one bad peer stop everyone else's edits.
                     this.rejected.push({ op, reason: String(err.message ?? err) });
                     continue;
                 }
@@ -182,7 +139,6 @@ export class Doc {
             this.emit(change, "remote");
         return n;
     }
-    /** Causal-delivery preconditions from the paper, per op type. */
     isReady(op) {
         switch (op.k) {
             case "add":
@@ -198,7 +154,6 @@ export class Doc {
             }
         }
     }
-    // ------------------------------------------------------------------ state-based replication
     toState() {
         const texts = {};
         for (const k of [...this.texts.keys()].sort()) {
@@ -208,7 +163,6 @@ export class Doc {
         }
         return { items: this.items.toState(), props: this.props.toState(), texts };
     }
-    /** Join a whole state into this replica (snapshot load, or anti-entropy). */
     merge(state) {
         const change = { items: new Set(), texts: new Set() };
         this.items.merge(state.items);
@@ -221,7 +175,6 @@ export class Doc {
             this.rga(item).merge(s);
             change.texts.add(item);
         }
-        // advance our clock past everything in the state so new edits sort after it
         let max = "";
         for (const [, tag] of state.items.adds)
             if (tag > max)
@@ -237,15 +190,12 @@ export class Doc {
             }
         if (max)
             this.clock.receive(max);
-        // buffered ops may have become ready
         this.applyRemote([]);
         this.emit(change, "remote");
     }
-    /** Short fingerprint of the full replicated state. Equal states give equal hashes. */
     hash() {
         return fnv1a(JSON.stringify(this.toState()));
     }
-    // ------------------------------------------------------------------ internals
     applyLocal(ops) {
         const change = { items: new Set(), texts: new Set() };
         for (const op of ops) {
@@ -288,7 +238,6 @@ export class Doc {
 const TS_RE = /^\d{13}\.[0-9a-z]{5}\.[A-Za-z0-9_-]{1,32}$/;
 const ID_RE = /^\d{13}\.[0-9a-z]{5}\.[A-Za-z0-9_-]{1,32}(:[0-9a-z]{3})?$/;
 const ITEM_RE = /^[A-Za-z0-9_-]{1,40}$/;
-/** Validate an op from the network before trusting it. */
 export function isOp(x) {
     if (!x || typeof x !== "object")
         return false;
@@ -314,10 +263,9 @@ export function isOp(x) {
             return false;
     }
 }
-const SRC_RE = /^[0-9a-f-]{36}\/[A-Za-z0-9_-]{6,64}\.(webp|jpe?g|png|gif)$/;
+const SRC_RE = /^[0-9a-f-]{36}\/[A-Za-z0-9_-]{6,64}\.(webp|jpe?g|png|gif|mp4|webm|mov)$/;
 const STROKE_RE = /^\d{1,6},\d{1,6}:\d{1,6},\d{1,6},\d(;-?\d{1,6},-?\d{1,6},\d)*$/;
 const COLOR_RE = /^[a-z]{2,12}$/;
-/** Every field has its own shape, so a peer can't smuggle arbitrary data into the board. */
 export function isFieldValue(field, v) {
     if (v === null)
         return true;

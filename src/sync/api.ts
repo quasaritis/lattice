@@ -1,7 +1,7 @@
 /** Thin client for the lattice_* Postgres functions, Storage uploads, over Supabase's HTTP API. */
 import type { DocState, Op } from "../crdt/doc.js";
 import { accessToken } from "./auth.js";
-import { IMAGE_BUCKET, SUPABASE_KEY, SUPABASE_URL } from "./config.js";
+import { IMAGE_BUCKET, SUPABASE_KEY, SUPABASE_URL, VIDEO_BUCKET } from "./config.js";
 
 export class ApiError extends Error {
   constructor(
@@ -130,5 +130,43 @@ export const api = {
       throw new ApiError(msg, res.status);
     }
     return path;
+  },
+
+  /**
+   * Upload a video into the board's folder, reporting progress (0..1) as it goes.
+   * XHR rather than fetch, because fetch can't report upload progress.
+   */
+  uploadVideo: async (board: string, file: Blob, ext: "mp4" | "webm" | "mov", onProgress?: (f: number) => void): Promise<string> => {
+    const a = new Uint8Array(9);
+    crypto.getRandomValues(a);
+    const name = Array.from(a, (b) => "abcdefghijklmnopqrstuvwxyz0123456789"[b % 36]).join("");
+    const path = `${board}/${name}.${ext}`;
+    const type = ext === "mov" ? "video/quicktime" : `video/${ext}`;
+    const h = await headers(false);
+    return new Promise<string>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${SUPABASE_URL}/storage/v1/object/${VIDEO_BUCKET}/${path}`);
+      for (const [k, v] of Object.entries(h)) xhr.setRequestHeader(k, v);
+      xhr.setRequestHeader("content-type", type);
+      xhr.setRequestHeader("x-upsert", "false");
+      xhr.setRequestHeader("cache-control", "31536000");
+      xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
+      xhr.onerror = () => reject(new ApiError("Can't reach the server to upload the video.", 0));
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) return resolve(path);
+        let msg = `Upload failed (${xhr.status})`;
+        try {
+          const j = JSON.parse(xhr.responseText);
+          if (/row-level security|policy/i.test(String(j?.message))) msg = "This board can't take more videos (20 max).";
+          else if (/size|too large|exceed/i.test(String(j?.message))) msg = "That video is too big. Videos can be up to 50 MB.";
+          else if (/mime|type/i.test(String(j?.message))) msg = "Use an MP4, WebM or MOV video.";
+          else if (j?.message) msg = String(j.message);
+        } catch {
+          /* not json */
+        }
+        reject(new ApiError(msg, xhr.status));
+      };
+      xhr.send(file);
+    });
   },
 };

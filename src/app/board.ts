@@ -5,6 +5,7 @@ import { BRUSH_SIZE, decodeStroke, distanceToPolyline, encodeStroke, type Brush,
 import { newItemId } from "../lab/random.js";
 import { api, ApiError } from "../sync/api.js";
 import { currentUser, onAuthChange } from "../sync/auth.js";
+import { MAX_VIDEO_BYTES } from "../sync/config.js";
 import type { PresenceMeta } from "../sync/realtime.js";
 import { BoardSession, type Cursor, type LiveInk, type SyncStats, type SyncStatus } from "../sync/session.js";
 import { mountAccount } from "./account.js";
@@ -43,7 +44,7 @@ const view = new BoardView(world, doc, { animateRemote: true });
 
 // ================================================================== tools
 
-type Tool = "select" | "hand" | "pen" | "hl" | "arrow" | "eraser" | "note" | "text" | "rect" | "ellipse" | "image";
+type Tool = "select" | "hand" | "pen" | "hl" | "arrow" | "eraser" | "note" | "text" | "rect" | "ellipse" | "image" | "video";
 const TOOLS: { id: Tool; icon: IconName; label: string; key: string; group: number }[] = [
   { id: "select", icon: "select", label: "Select", key: "V", group: 0 },
   { id: "hand", icon: "hand", label: "Pan", key: "H", group: 0 },
@@ -56,6 +57,7 @@ const TOOLS: { id: Tool; icon: IconName; label: string; key: string; group: numb
   { id: "rect", icon: "rect", label: "Box", key: "R", group: 2 },
   { id: "ellipse", icon: "ellipse", label: "Bubble", key: "O", group: 2 },
   { id: "image", icon: "image", label: "Image", key: "I", group: 2 },
+  { id: "video", icon: "video", label: "Video", key: "U", group: 2 },
 ];
 
 const prefs = (() => {
@@ -98,7 +100,7 @@ const toolButtons = new Map<Tool, HTMLButtonElement>();
     b.setAttribute("aria-pressed", "false");
     b.innerHTML = `${icon(t.icon)}<span class="tip">${t.label}<kbd>${t.key}</kbd></span>`;
     if (t.id === "pen" || t.id === "hl" || t.id === "arrow") b.append(el("i", "swatch-dot"));
-    b.addEventListener("click", () => (t.id === "image" ? pickImage() : setTool(t.id)));
+    b.addEventListener("click", () => (t.id === "image" ? pickImage() : t.id === "video" ? pickVideo() : setTool(t.id)));
     dock.append(b);
     toolButtons.set(t.id, b);
   }
@@ -116,6 +118,7 @@ const toolButtons = new Map<Tool, HTMLButtonElement>();
 
 function setTool(t: Tool): void {
   if (t === "image") return pickImage();
+  if (t === "video") return pickVideo();
   stopEditing();
   if (t !== "select") select(null);
   tool = t;
@@ -258,7 +261,7 @@ function renderOptions(): void {
     const current = String(doc.prop(id, "color") ?? "");
     if (kind === "note" || kind === "rect" || kind === "ellipse") {
       for (const c of PAPER_KEYS) add(swatch(PAPER[c].hex, PAPER[c].label, (current || "sun") === c, () => setProps(id, { color: c })));
-    } else if (kind !== "image") {
+    } else if (kind !== "image" && kind !== "video") {
       const list = (kind === "ink" && doc.prop(id, "brush") === "hl") ? HL_COLORS : PEN_COLORS;
       for (const c of list) add(swatch(INK[c].hex, INK[c].label, (current || "ink") === c, () => setProps(id, { color: c })));
     }
@@ -836,7 +839,7 @@ function resized(kind: string, s: Geom, corner: string, p: { x: number; y: numbe
   const lx = dx * cos + dy * sin, ly = -dx * sin + dy * cos;
   const minW = kind === "ink" ? 8 : kind === "text" ? 40 : 60, minH = kind === "ink" ? 8 : 30;
   let w = Math.max(minW, lx * sx), h = Math.max(minH, ly * sy);
-  if (kind === "image" || kind === "ink" || keepAspect) {
+  if (kind === "image" || kind === "video" || kind === "ink" || keepAspect) {
     const k = Math.max(w / s.w, h / s.h, minW / s.w, minH / s.h);
     w = s.w * k;
     h = s.h * k;
@@ -967,10 +970,10 @@ filePick.addEventListener("change", () => {
 
 window.addEventListener("paste", (e) => {
   if ((e.target as HTMLElement).closest("input, textarea")) return;
-  const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+  const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/") || f.type.startsWith("video/"));
   if (!files.length) return;
   e.preventDefault();
-  files.forEach((f, i) => void addImage(f, innerWidth / 2 + i * 30, innerHeight / 2 + i * 30));
+  files.forEach((f, i) => void addMedia(f, innerWidth / 2 + i * 30, innerHeight / 2 + i * 30));
 });
 
 let dragDepth = 0;
@@ -990,8 +993,8 @@ canvas.addEventListener("drop", (e) => {
   e.preventDefault();
   dragDepth = 0;
   $("drop").hidden = true;
-  const files = [...(e.dataTransfer?.files ?? [])].filter((f) => f.type.startsWith("image/"));
-  files.forEach((f, i) => void addImage(f, e.clientX + i * 30, e.clientY + i * 30));
+  const files = [...(e.dataTransfer?.files ?? [])].filter((f) => f.type.startsWith("image/") || f.type.startsWith("video/"));
+  files.forEach((f, i) => void addMedia(f, e.clientX + i * 30, e.clientY + i * 30));
 });
 
 /** Shrink big photos before upload: longest side 1600px, WebP. Animated GIFs are kept as they are. */
@@ -1053,6 +1056,90 @@ async function addImage(file: File, clientX: number, clientY: number): Promise<v
     toast(err instanceof ApiError ? err.message : "The image couldn't be uploaded.", { tone: "error" });
   } finally {
     setTimeout(() => URL.revokeObjectURL(local), 4000);
+  }
+}
+
+// ================================================================== videos
+
+const videoPick = $("videoPick") as HTMLInputElement;
+function pickVideo(): void {
+  videoPick.value = "";
+  videoPick.click();
+}
+videoPick.addEventListener("change", () => {
+  const files = [...(videoPick.files ?? [])];
+  files.forEach((f, i) => void addVideo(f, innerWidth / 2 + i * 30, innerHeight / 2 + i * 30));
+});
+
+function addMedia(file: File, clientX: number, clientY: number): Promise<void> {
+  return file.type.startsWith("video/") ? addVideo(file, clientX, clientY) : addImage(file, clientX, clientY);
+}
+
+function videoExt(file: File): "mp4" | "webm" | "mov" | null {
+  if (file.type === "video/mp4") return "mp4";
+  if (file.type === "video/webm") return "webm";
+  if (file.type === "video/quicktime") return "mov";
+  const m = file.name.toLowerCase().match(/\.(mp4|m4v|webm|mov)$/);
+  return m ? (m[1] === "m4v" ? "mp4" : (m[1] as "mp4" | "webm" | "mov")) : null;
+}
+
+/** Width and height from the file itself, so the item has the video's shape from the start. */
+function videoSize(url: string): Promise<{ w: number; h: number }> {
+  return new Promise((resolve) => {
+    const v = document.createElement("video");
+    const done = (w: number, h: number) => {
+      clearTimeout(timer);
+      v.removeAttribute("src");
+      v.load();
+      resolve({ w, h });
+    };
+    const timer = setTimeout(() => done(1280, 720), 8000);
+    v.preload = "metadata";
+    v.muted = true;
+    v.onloadedmetadata = () => done(v.videoWidth || 1280, v.videoHeight || 720);
+    v.onerror = () => done(1280, 720);
+    v.src = url;
+  });
+}
+
+async function addVideo(file: File, clientX: number, clientY: number): Promise<void> {
+  if (session.isPaused || !navigator.onLine) {
+    toast("Videos need a connection. Reconnect, then add it again.");
+    return;
+  }
+  const ext = videoExt(file);
+  if (!ext) {
+    toast("Use an MP4, WebM or MOV video.", { tone: "error" });
+    return;
+  }
+  if (file.size > MAX_VIDEO_BYTES) {
+    toast(`That video is ${(file.size / 1048576).toFixed(0)} MB. Videos can be up to 50 MB.`, { tone: "error" });
+    return;
+  }
+  const local = URL.createObjectURL(file);
+  const size = await videoSize(local);
+  const maxW = 480 / Math.max(cam.z, 0.5);
+  const scale = Math.min(1, maxW / size.w, (maxW * 1.2) / size.h);
+  const w = Math.round(size.w * scale), h = Math.round(size.h * scale);
+  const p = toWorld(clientX, clientY);
+  const id = newItemId();
+  session.commit(doc.createItem(id, { kind: "video", x: Math.round(p.x - w / 2), y: Math.round(p.y - h / 2), w, h, src: "", z: topZ() }));
+  view.showLocalImage(id, local);
+  const node = view.nodes.get(id);
+  node?.style.setProperty("--p", "0");
+  if (tool !== "select") setTool("select");
+  select(id);
+  $("empty").hidden = true;
+  try {
+    const path = await api.uploadVideo(boardId, file, ext, (f) => view.nodes.get(id)?.style.setProperty("--p", f.toFixed(3)));
+    session.commit(doc.setProps(id, { src: path }));
+    view.clearLocalImage(id);
+    pushStep(createdStep([id]));
+  } catch (err) {
+    session.commit(doc.deleteItem(id));
+    toast(err instanceof ApiError ? err.message : "The video couldn't be uploaded.", { tone: "error" });
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(local), 15000);
   }
 }
 

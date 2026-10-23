@@ -1,21 +1,6 @@
-// Generated from src/crdt by scripts/copy-crdt.mjs. Do not edit.
-/**
- * OR-Set: Observed-Remove Set (Shapiro et al., Spec. 15).
- *
- * add(e) tags the element with a fresh unique tag. remove(e) removes only the tags the
- * remover has observed. So when an add and a remove of the same element are concurrent,
- * the remove cannot have seen the new tag, and the add wins. That is the behaviour people
- * expect on a whiteboard: if you delete a sticky note while I duplicate it offline,
- * my copy survives.
- *
- * Removed tags are kept as tombstones so the state forms a join-semilattice:
- *   state = (adds: set of (element, tag), removed: set of tag), merge = pairwise union.
- * Union is commutative, associative and idempotent, so state-based merge converges.
- */
+// Generated from src/crdt/orset.ts by scripts/copy-crdt.mjs. Do not edit.
 export class ORSet {
-    /** element -> tags that added it (live or removed) */
     tags = new Map();
-    /** tag -> element, for every tag ever added */
     tagOwner = new Map();
     removed = new Set();
     has(element) {
@@ -33,11 +18,9 @@ export class ORSet {
     hasTag(tag) {
         return this.tagOwner.has(tag);
     }
-    /** Tags of `element` this replica currently observes as live: what a remove must carry. */
     liveTags(element) {
         return [...(this.tags.get(element) ?? [])].filter((t) => !this.removed.has(t)).sort();
     }
-    /** Downstream add. Returns true if the element became visible. */
     add(element, tag) {
         const owner = this.tagOwner.get(tag);
         if (owner !== undefined) {
@@ -53,10 +36,6 @@ export class ORSet {
         t.add(tag);
         return !was && this.has(element);
     }
-    /**
-     * Downstream remove. Precondition (causal delivery): every tag has already been added here.
-     * Callers check `hasTag` first; see Doc.isReady. Returns true if the element became invisible.
-     */
     remove(element, tags) {
         const was = this.has(element);
         for (const tag of tags) {

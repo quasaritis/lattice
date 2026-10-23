@@ -1,27 +1,5 @@
-// Generated from src/crdt by scripts/copy-crdt.mjs. Do not edit.
-/**
- * RGA: Replicated Growable Array (Shapiro et al., Spec. 19), used for the text inside notes.
- *
- * Every character is a vertex with a unique, causally increasing id. Inserting means
- * "put this character right after vertex u". Deleting leaves a tombstone, so a concurrent
- * insert next to a deleted character still has an anchor.
- *
- * We store it in the tree form: each vertex is a child of the vertex it was inserted after.
- * Document order is a pre-order walk where siblings go newest-first. This gives exactly the
- * paper's rule ("two inserts at the same position are ordered in opposite order of their
- * timestamps") and one more property people care about in an editor: two people typing
- * at the same spot never get their words interleaved letter by letter.
- *
- * Because the order is a pure function of the vertex set, state-based merge is just set
- * union of vertices and of tombstones, which is trivially a join-semilattice.
- *
- * Vertex ids for a run of typed characters share one HLC timestamp: the first character
- * gets `ts`, later ones `ts:001`, `ts:002`, ... These sort after `ts` and before any later
- * timestamp, so ids stay unique and consistent with causality while one op carries a
- * whole run of text.
- */
+// Generated from src/crdt/rga.ts by scripts/copy-crdt.mjs. Do not edit.
 export const ROOT = "";
-/** Fixed-width so string order matches numeric order (":00a" < ":010"). 36^3 > MAX_TEXT. */
 export function runIds(baseId, length) {
     const ids = [baseId];
     for (let i = 1; i < length; i++)
@@ -39,11 +17,6 @@ export class RGA {
     get size() {
         return this.vertices.size;
     }
-    /**
-     * Downstream insert of a run of characters after `after`.
-     * Precondition: `after` exists (causal delivery). Idempotent.
-     * Returns true if anything changed.
-     */
     insert(baseId, after, text) {
         if (!this.has(after))
             throw new Error(`Insert after unknown vertex ${after}`);
@@ -61,7 +34,6 @@ export class RGA {
         }
         return changed;
     }
-    /** Downstream delete. Precondition: the vertices exist. Idempotent. */
     delete(ids) {
         let changed = false;
         for (const id of ids) {
@@ -80,21 +52,15 @@ export class RGA {
     text() {
         return this.visible().text;
     }
-    /** Ids of the visible characters, in order. */
     visibleIds() {
         return this.visible().ids;
     }
-    /** Id of the visible character just before `index` (ROOT for index 0). */
     idBefore(index) {
         if (index <= 0)
             return ROOT;
         const ids = this.visible().ids;
         return ids[Math.min(index, ids.length) - 1];
     }
-    /**
-     * Visible index just after the vertex `id`, even if it has since been deleted.
-     * Used to keep a caret anchored to "after this character" while remote edits land.
-     */
     indexAfter(id) {
         if (id === ROOT)
             return 0;
@@ -123,7 +89,6 @@ export class RGA {
         return { nodes, tomb };
     }
     merge(state) {
-        // Sorted by id, and a child's id is always larger than its parent's, so parents arrive first.
         const pending = [...state.nodes].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
         for (const [id, after, ch] of pending) {
             const existing = this.vertices.get(id);
@@ -145,7 +110,6 @@ export class RGA {
         let sibs = this.children.get(v.after);
         if (!sibs)
             this.children.set(v.after, (sibs = []));
-        // newest first: find the first sibling older than v
         let i = 0;
         while (i < sibs.length && sibs[i] > v.id)
             i++;
@@ -157,7 +121,6 @@ export class RGA {
         if (this.order)
             return this.order;
         const out = [];
-        // iterative pre-order walk (text can be long; avoid deep recursion)
         const stack = [...(this.children.get(ROOT) ?? [])].reverse();
         while (stack.length) {
             const id = stack.pop();

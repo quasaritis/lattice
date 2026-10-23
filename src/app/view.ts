@@ -4,31 +4,15 @@
  * the replicas in the landing-page demo, and the lab.
  */
 import type { Doc } from "../crdt/doc.js";
-import type { Json } from "../crdt/lww.js";
 import { BRUSH_SIZE, arrowPath, centerPath, decodeStroke, outlinePath, type Brush, type Pt } from "../draw/stroke.js";
-import { imageUrl } from "../sync/config.js";
+import { mediaUrl } from "../sync/config.js";
+import { icon } from "./icons.js";
+import { num, outerBox, type Geom } from "../draw/geom.js";
 import { inkHex, paperHex } from "./palette.js";
 
+export { num, outerBox, type Geom };
+
 const SVG = "http://www.w3.org/2000/svg";
-export const num = (v: Json | undefined, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
-
-export interface Geom {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  /** rotation in degrees, around the centre */
-  r?: number;
-}
-
-/** Axis-aligned box around a rotated item. */
-export function outerBox(g: Geom): Geom {
-  const a = ((g.r ?? 0) * Math.PI) / 180;
-  if (!a) return g;
-  const c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
-  const w = g.w * c + g.h * s, h = g.w * s + g.h * c;
-  return { x: g.x + g.w / 2 - w / 2, y: g.y + g.h / 2 - h / 2, w, h };
-}
 
 export interface ViewOptions {
   /** Animate items that arrive from other replicas. */
@@ -163,6 +147,46 @@ export class BoardView {
       img.draggable = false;
       img.addEventListener("load", () => node.classList.add("loaded"));
       node.append(img);
+    } else if (kind === "video") {
+      const v = document.createElement("video");
+      v.muted = true;
+      v.loop = true;
+      v.playsInline = true;
+      v.preload = "metadata";
+      v.draggable = false;
+      v.setAttribute("disablepictureinpicture", "");
+      v.addEventListener("loadeddata", () => node.classList.add("loaded"));
+      v.addEventListener("loadedmetadata", () => {
+        const d = Number.isFinite(v.duration) ? Math.round(v.duration) : 0;
+        badge.textContent = d ? `${Math.floor(d / 60)}:${String(d % 60).padStart(2, "0")}` : "";
+      });
+      v.addEventListener("play", () => node.classList.add("playing"));
+      v.addEventListener("pause", () => node.classList.remove("playing"));
+      // playing is personal: it never goes through the CRDT, so nobody else's video jumps
+      const play = document.createElement("button");
+      play.type = "button";
+      play.className = "play";
+      play.setAttribute("aria-label", "Play video");
+      play.innerHTML = icon("play");
+      const toggle = (e: Event) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (v.paused) {
+          v.muted = false;
+          void v.play().catch(() => ((v.muted = true), void v.play().catch(() => {})));
+          play.setAttribute("aria-label", "Pause video");
+          play.innerHTML = icon("pause");
+        } else {
+          v.pause();
+          play.setAttribute("aria-label", "Play video");
+          play.innerHTML = icon("play");
+        }
+      };
+      play.addEventListener("pointerdown", toggle);
+      play.addEventListener("keydown", (e) => (e.key === "Enter" || e.key === " ") && toggle(e));
+      const badge = document.createElement("span");
+      badge.className = "dur";
+      node.append(v, play, badge);
     } else {
       const t = document.createElement("div");
       t.className = "text";
@@ -217,15 +241,17 @@ export class BoardView {
       node.classList.toggle("hl", brush === "hl");
       return;
     }
-    if (kind === "image") {
+    if (kind === "image" || kind === "video") {
       const src = String(this.doc.prop(id, "src") ?? "");
-      const img = node.querySelector("img")!;
-      const url = src ? imageUrl(src) : "";
+      const media = node.querySelector<HTMLImageElement | HTMLVideoElement>("img, video")!;
+      let url = mediaUrl(kind, src) ?? "";
+      // "#t=0.1" makes phones show the first frame instead of a black box
+      if (url && kind === "video") url += "#t=0.1";
       node.classList.toggle("pending", !src && !node.dataset.local);
       if (node.dataset.local && !src) return; // showing the uploader's local preview
-      if (url && img.getAttribute("src") !== url) {
+      if (url && media.getAttribute("src") !== url) {
         node.classList.remove("loaded");
-        img.src = url;
+        media.src = url;
       }
       return;
     }
@@ -242,8 +268,8 @@ export class BoardView {
     if (!node) return;
     node.dataset.local = "1";
     node.classList.add("uploading");
-    const img = node.querySelector("img");
-    if (img) img.src = url;
+    const media = node.querySelector<HTMLImageElement | HTMLVideoElement>("img, video");
+    if (media) media.src = url;
   }
 
   clearLocalImage(id: string): void {

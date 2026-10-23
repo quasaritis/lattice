@@ -1,4 +1,4 @@
-// Generated from src/crdt by scripts/copy-crdt.mjs. Do not edit.
+// Generated from src/crdt/lww.ts by scripts/copy-crdt.mjs. Do not edit.
 export class LWWMap {
     entries = new Map();
     get(key) {
@@ -7,7 +7,6 @@ export class LWWMap {
     timestamp(key) {
         return this.entries.get(key)?.ts;
     }
-    /** Apply an assignment. Returns true if it changed the visible value. */
     set(key, value, ts) {
         const cur = this.entries.get(key);
         if (cur && cur.ts >= ts)
@@ -26,7 +25,6 @@ export class LWWMap {
         }
         return out;
     }
-    /** Join another replica's state into this one. */
     merge(state) {
         for (const [k, [value, ts]] of Object.entries(state))
             this.set(k, value, ts);

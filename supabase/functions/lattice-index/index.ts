@@ -2,8 +2,9 @@
 //
 // The op log is the source of truth, but it's a stream of CRDT operations, not something you
 // can read. This function replays a board's snapshot and ops with the exact CRDT code the
-// browsers run (copied into ./crdt by scripts/copy-crdt.mjs) and writes one row per item to
-// lattice.board_items, so the dashboard can show what people are making.
+// browsers run (copied into ./lib by scripts/copy-crdt.mjs), then
+//   - writes one row per item to lattice.board_items (text, strokes, photos, videos), and
+//   - draws the whole board, every stroke included, as an SVG in the lattice-boards bucket.
 //
 // Browsers call it after they save a board preview. It only does work when the log has grown
 // since the last run, and at most once every few seconds per board.
@@ -11,10 +12,12 @@
 // POST /lattice-index  { board }  ->  200 { items, seq } | { fresh: true }
 
 import postgres from "npm:postgres@3.4.5";
-import { Doc } from "./crdt/doc.js";
+import { Doc } from "./lib/crdt/doc.js";
+import { boardSvg } from "./lib/draw/board-svg.js";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const DB_URL = Deno.env.get("SUPABASE_DB_URL")!;
+const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const sql = postgres(DB_URL, { prepare: false, max: 2, idle_timeout: 20, connect_timeout: 10 });
 
 const ALLOWED = ["https://quasarboard.vercel.app", "https://quasarboard-byditors.vercel.app"];
@@ -43,6 +46,31 @@ function reply(body: unknown, status: number, origin: string) {
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
+
+const IMAGE_RE = /\.(webp|jpe?g|png|gif)$/;
+const VIDEO_RE = /\.(mp4|webm|mov)$/;
+function mediaUrl(kind: string, src: string): string | null {
+  if (!src) return null;
+  if (kind === "video") return VIDEO_RE.test(src) ? `${SUPABASE_URL}/storage/v1/object/public/lattice-videos/${src}` : null;
+  return IMAGE_RE.test(src) ? `${SUPABASE_URL}/storage/v1/object/public/lattice-images/${src}` : null;
+}
+
+/** Put the board's picture in Storage (service role; browsers can't write this bucket). */
+async function savePicture(board: string, svg: string | null): Promise<string | null> {
+  const path = `${board}.svg`;
+  const url = `${SUPABASE_URL}/storage/v1/object/lattice-boards/${path}`;
+  if (!svg) {
+    await fetch(url, { method: "DELETE", headers: { authorization: `Bearer ${SERVICE_KEY}`, apikey: SERVICE_KEY } }).catch(() => {});
+    return null;
+  }
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { authorization: `Bearer ${SERVICE_KEY}`, apikey: SERVICE_KEY, "content-type": "image/svg+xml", "x-upsert": "true", "cache-control": "60" },
+    body: svg,
+  });
+  if (!r.ok) throw new Error(`picture upload ${r.status}: ${await r.text()}`);
+  return `${SUPABASE_URL}/storage/v1/object/public/lattice-boards/${path}`;
+}
 
 async function index(board: string) {
   const [b] = await sql`select id, indexed_seq, indexed_at, (indexed_at > now() - interval '4 seconds') as busy from lattice.boards where id = ${board}`;
@@ -83,19 +111,47 @@ async function index(board: string) {
       h: num(doc.prop(id, "h")),
       rotation: num(doc.prop(id, "r")) ?? 0,
       z: num(doc.prop(id, "z")),
-      image_url: src ? `${SUPABASE_URL}/storage/v1/object/public/lattice-images/${src}` : null,
+      image_url: src ? mediaUrl(kind, src) : null,
       points: d ? d.split(";").length : null,
+      stroke: d,
     };
   });
+
+  const [{ title }] = await sql`select coalesce(nullif(title, ''), 'Untitled board') as title from lattice.boards where id = ${board}`;
+  // Photos go inside the picture as data, so it shows them anywhere (an <img> never loads outside links).
+  const inline = new Map<string, string>();
+  let budget = 7_500_000;
+  for (const it of items) {
+    if (it.kind !== "image" || !it.image_url) continue;
+    const src = String(doc.prop(it.item_id, "src") ?? "");
+    if (inline.has(src) || budget <= 0) continue;
+    try {
+      const r = await fetch(it.image_url);
+      if (!r.ok) continue;
+      const bytes = new Uint8Array(await r.arrayBuffer());
+      if (bytes.length * 1.37 > budget) continue;
+      const type = (r.headers.get("content-type") ?? "image/webp").split(";")[0];
+      if (!/^image\/(webp|jpeg|png|gif)$/.test(type)) continue;
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      const data = `data:${type};base64,${btoa(bin)}`;
+      budget -= data.length;
+      inline.set(src, data);
+    } catch {
+      /* leave the link */
+    }
+  }
+  const pictureUrl = (kind: string, src: string) => (kind === "image" && inline.get(src)) || mediaUrl(kind, src);
+  const picture = await savePicture(board, boardSvg(doc, { full: true, mediaUrl: pictureUrl, title }));
 
   await sql.begin(async (tx) => {
     await tx`delete from lattice.board_items where board_id = ${board}`;
     for (let i = 0; i < items.length; i += 500) {
       await tx`insert into lattice.board_items ${tx(items.slice(i, i + 500))}`;
     }
-    await tx`update lattice.boards set item_count = ${items.length}, indexed_seq = ${top}, indexed_at = now() where id = ${board}`;
+    await tx`update lattice.boards set item_count = ${items.length}, indexed_seq = ${top}, indexed_at = now(), picture_url = ${picture} where id = ${board}`;
   });
-  return { status: 200, body: { items: items.length, seq: String(top) } };
+  return { status: 200, body: { items: items.length, seq: String(top), picture } };
 }
 
 Deno.serve(async (req) => {

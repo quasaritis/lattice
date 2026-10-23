@@ -39,7 +39,7 @@ export type Listener = (change: Change, source: "local" | "remote") => void;
 
 export const MAX_TEXT = 2000;
 export const ITEM_FIELDS = ["kind", "x", "y", "w", "h", "color", "z", "src", "d", "brush", "fs", "r"] as const;
-export const ITEM_KINDS = ["note", "rect", "ellipse", "text", "image", "ink", "arrow"] as const;
+export const ITEM_KINDS = ["note", "rect", "ellipse", "text", "image", "ink", "arrow", "video"] as const;
 export const BRUSHES = ["pen", "marker", "hl"] as const;
 /** Longest stroke we accept, in characters of encoded points (see draw/stroke.ts). */
 export const MAX_STROKE = 9000;
@@ -339,7 +339,7 @@ export function isOp(x: unknown): x is Op {
   }
 }
 
-const SRC_RE = /^[0-9a-f-]{36}\/[A-Za-z0-9_-]{6,64}\.(webp|jpe?g|png|gif)$/;
+const SRC_RE = /^[0-9a-f-]{36}\/[A-Za-z0-9_-]{6,64}\.(webp|jpe?g|png|gif|mp4|webm|mov)$/;
 const STROKE_RE = /^\d{1,6},\d{1,6}:\d{1,6},\d{1,6},\d(;-?\d{1,6},-?\d{1,6},\d)*$/;
 const COLOR_RE = /^[a-z]{2,12}$/;
 
