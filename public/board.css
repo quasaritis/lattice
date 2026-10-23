@@ -73,11 +73,31 @@
 .item.selected:not(.ink):not(.arrow) { outline: 2px solid var(--select); outline-offset: 5px; }
 .item.dragging { cursor: grabbing; }
 .item.dragging.note { box-shadow: 0 2px 4px rgba(23,25,30,.08), 0 22px 40px -14px rgba(23,25,30,.4); }
+.item { transform-origin: 50% 50%; }
 .item .grip {
-  position: absolute; right: -9px; bottom: -9px; width: 16px; height: 16px; border-radius: 50%;
-  background: #fff; border: 2px solid var(--select); cursor: nwse-resize; display: none; pointer-events: auto;
+  position: absolute; width: 14px; height: 14px; border-radius: 4px;
+  background: #fff; border: 2px solid var(--select); display: none; pointer-events: auto; z-index: 2;
+  box-shadow: 0 1px 3px rgba(23,25,30,.18);
 }
-.item.selected .grip { display: block; }
+.item .grip[data-c="nw"] { left: -12px; top: -12px; cursor: nwse-resize; }
+.item .grip[data-c="ne"] { right: -12px; top: -12px; cursor: nesw-resize; }
+.item .grip[data-c="sw"] { left: -12px; bottom: -12px; cursor: nesw-resize; }
+.item .grip[data-c="se"] { right: -12px; bottom: -12px; cursor: nwse-resize; }
+/* the turning handle: a knob on a short stem above the item */
+.item .rot {
+  position: absolute; left: 50%; top: -42px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%;
+  background: #fff; border: 2px solid var(--select); display: none; pointer-events: auto; z-index: 2; cursor: grab;
+  box-shadow: 0 1px 3px rgba(23,25,30,.18); transition: transform 140ms var(--ease-out);
+}
+.item .rot::after { content: ""; position: absolute; left: 50%; top: 100%; width: 2px; height: 18px; margin: 2px 0 0 -1px; background: var(--select); pointer-events: none; }
+@media (hover: hover) { .item .rot:hover, .item .grip:hover { transform: scale(1.18); } }
+.item .grip { transition: transform 140ms var(--ease-out); }
+.canvas.rotating, .canvas.rotating * { cursor: grabbing !important; }
+.item.selected .grip, .item.selected .rot { display: block; }
+@media (pointer: coarse) {
+  /* bigger targets for fingers, drawn the same size */
+  .item .grip::before, .item .rot::before { content: ""; position: absolute; inset: -12px; }
+}
 .item.arrive { animation: arrive 360ms var(--ease-out); }
 .item.ink.arrive, .item.arrow.arrive { animation: ink-arrive 420ms var(--ease-out); }
 @keyframes arrive { from { opacity: 0; scale: 0.94; } }

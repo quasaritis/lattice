@@ -17,6 +17,17 @@ export interface Geom {
   y: number;
   w: number;
   h: number;
+  /** rotation in degrees, around the centre */
+  r?: number;
+}
+
+/** Axis-aligned box around a rotated item. */
+export function outerBox(g: Geom): Geom {
+  const a = ((g.r ?? 0) * Math.PI) / 180;
+  if (!a) return g;
+  const c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
+  const w = g.w * c + g.h * s, h = g.w * s + g.h * c;
+  return { x: g.x + g.w / 2 - w / 2, y: g.y + g.h / 2 - h / 2, w, h };
 }
 
 export interface ViewOptions {
@@ -66,6 +77,7 @@ export class BoardView {
       y: num(this.doc.prop(id, "y"), 0),
       w: Math.max(min, num(this.doc.prop(id, "w"), 200)),
       h: Math.max(k === "text" ? 30 : min, num(this.doc.prop(id, "h"), 150)),
+      r: k === "arrow" ? 0 : num(this.doc.prop(id, "r"), 0),
     };
   }
 
@@ -73,7 +85,7 @@ export class BoardView {
   bounds(): Geom | null {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const id of this.doc.itemIds()) {
-      const g = this.geom(id);
+      const g = outerBox(this.geom(id));
       x0 = Math.min(x0, g.x); y0 = Math.min(y0, g.y);
       x1 = Math.max(x1, g.x + g.w); y1 = Math.max(y1, g.y + g.h);
     }
@@ -123,7 +135,7 @@ export class BoardView {
 
   /** Position and size an item (also used while dragging, before the op is committed). */
   place(id: string, node: HTMLElement, g: Geom): void {
-    node.style.transform = `translate(${g.x}px, ${g.y}px)`;
+    node.style.transform = g.r ? `translate(${g.x}px, ${g.y}px) rotate(${g.r}deg)` : `translate(${g.x}px, ${g.y}px)`;
     node.style.width = `${g.w}px`;
     node.style.height = `${g.h}px`;
     void id;
@@ -158,9 +170,16 @@ export class BoardView {
       this.writeText(id, t);
     }
     if (kind !== "arrow") {
-      const grip = document.createElement("div");
-      grip.className = "grip";
-      node.append(grip);
+      // a handle on every corner, and one above the item to turn it
+      for (const c of ["nw", "ne", "sw", "se"]) {
+        const grip = document.createElement("div");
+        grip.className = "grip";
+        grip.dataset.c = c;
+        node.append(grip);
+      }
+      const rot = document.createElement("div");
+      rot.className = "rot";
+      node.append(rot);
     }
     return node;
   }

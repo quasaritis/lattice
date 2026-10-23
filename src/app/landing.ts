@@ -180,76 +180,6 @@ function mountStage(): void {
   show(0);
 }
 
-// ------------------------------------------------------------------ test transcript
-
-/** Output of a real `npm run test:long`, trimmed to the test names and the summary. */
-const TEST_OUTPUT = `✔ HLC: timestamps strictly increase even when the wall clock stands still or goes back (7.7ms)
-✔ HLC: after receiving a remote timestamp, every local event is ordered after it (causality) (0.5ms)
-✔ HLC: fractional physical clocks still give valid timestamps (regression: lab demo dropped every op) (1.1ms)
-✔ HLC: refuses timestamps far in the future (0.5ms)
-✔ LWW-Map: concurrent writes converge to the highest timestamp, in any order (0.6ms)
-✔ OR-Set: a concurrent add beats a remove that never saw it (add-wins) (0.4ms)
-✔ OR-Set: remove of everything observed deletes the element everywhere (0.1ms)
-✔ RGA: concurrent inserts at the same spot: newer goes first, same result in any order (0.2ms)
-✔ RGA: two people typing at the same spot do not interleave letter by letter (1.0ms)
-✔ RGA: deleted characters stay as anchors for concurrent inserts (tombstones) (2.0ms)
-✔ RGA: a long typed run keeps its order (regression: run ids ':10' once sorted before ':9') (0.7ms)
-✔ RGA: emoji and other multi-unit characters stay whole (0.2ms)
-✔ Doc: ops that arrive before their dependencies wait, then apply (0.8ms)
-✔ Doc: applying the same op many times changes nothing (idempotence) (0.8ms)
-✔ Doc: snapshot (state) + later ops equals receiving every op (1.0ms)
-✔ Doc: hostile ops are rejected or dropped without breaking the replica (0.2ms)
-✔ Strokes: encode → decode keeps the shape to half a pixel, and validates as a field (5.1ms)
-✔ Fields: images only point at board storage paths, strokes only carry numbers (1.5ms)
-✔ Undo of a delete brings the item back with its props and text (0.4ms)
-✔ Editing wins over a concurrent delete (edits re-assert the item with a fresh tag) (3.8ms)
-✔ strong eventual consistency over 3000 hostile network schedules (8627ms)
-✔ state merge is commutative, associative and idempotent (3000 cases) (3075ms)
-✔ op-based and state-based replication agree (3000 cases) (1856ms)
-✔ worst case: every op delivered one at a time in reverse order (12ms)
-ℹ tests 24
-ℹ pass 24
-ℹ fail 0
-ℹ duration_ms 13764`;
-
-const RUN: [string, string][] = [
-  ["cmd", "$ npm run test:long"],
-  ["dim", "> SEEDS=3000 node --test build/test/*.test.js"],
-  ["", ""],
-  ...TEST_OUTPUT.split("\n").filter(Boolean).map((l): [string, string] => [l.startsWith("ℹ") ? "dim" : "ok", l]),
-];
-
-function mountTerminal(): void {
-  const out = document.getElementById("termOut");
-  if (!out) return;
-  const lines = RUN;
-  out.replaceChildren();
-  const pre = out;
-  let shown = false;
-  const render = (n: number) => {
-    pre.replaceChildren(
-      ...lines.slice(0, n).map(([cls, text]) => {
-        const s = document.createElement("span");
-        if (cls) s.className = cls;
-        s.textContent = text + "\n";
-        return s;
-      }),
-    );
-  };
-  render(0);
-  new IntersectionObserver((es) => {
-    if (shown || !es.some((e) => e.isIntersecting)) return;
-    shown = true;
-    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return render(lines.length);
-    let n = 0;
-    const tick = () => {
-      render(++n);
-      if (n < lines.length) setTimeout(tick, n < 3 ? 260 : 70);
-    };
-    tick();
-  }, { threshold: 0.4 }).observe(pre);
-}
-
 // ------------------------------------------------------------------ boot
 
 wireNewBoardButtons();
@@ -263,7 +193,6 @@ if (heroHost) {
 }
 mountTray();
 mountStage();
-mountTerminal();
 
 const flow = document.querySelector(".flow-figure");
 if (flow) new IntersectionObserver((es, o) => {

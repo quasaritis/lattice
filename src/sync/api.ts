@@ -83,6 +83,15 @@ export const api = {
 
   setPreview: (board: string, svg: string) => rpc<boolean>("lattice_set_preview", { p_board: board, p_svg: svg }),
 
+  /** Ask the server to rebuild its readable copy of the board (lattice.board_items) from the op log. */
+  indexBoard: (board: string) =>
+    fetch(`${SUPABASE_URL}/functions/v1/lattice-index`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_KEY, "content-type": "application/json" },
+      body: JSON.stringify({ board }),
+      keepalive: true,
+    }).then((r) => r.ok),
+
   /** Signed-in only: remember this board in "Your boards". */
   saveBoard: (board: string) => rpc<boolean>("lattice_save_board", { p_board: board }),
 

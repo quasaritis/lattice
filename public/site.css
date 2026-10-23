@@ -3,7 +3,7 @@
 .site main { max-width: 1320px; margin: 0 auto; padding: 0 32px; }
 
 /* ---------------------------------------------------------------- nav */
-.nav { position: sticky; top: 0; z-index: 70; display: flex; align-items: center; gap: 28px; max-width: 1320px; margin: 0 auto; padding: 14px 32px; background: color-mix(in oklab, var(--board) 92%, transparent); }
+.nav { position: sticky; top: 0; z-index: 70; display: flex; align-items: center; gap: 28px; max-width: 1320px; margin: 0 auto; padding: 14px 32px; background: var(--board); box-shadow: -100vw 0 0 var(--board), 100vw 0 0 var(--board); }
 .brand { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: var(--ink); }
 .brand svg { width: 30px; height: 30px; }
 .brand span { font: 800 1.5rem/1 var(--font-hand); font-variation-settings: "INFM" 20, "BNCE" 0; letter-spacing: -0.03em; }
@@ -112,8 +112,8 @@
 .stage-sticky { position: sticky; top: calc(50vh - 220px); }
 
 /* ---------------------------------------------------------------- paper + terminal */
-.paper { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 56px; align-items: start; padding: 120px 0; }
-.paper-copy p { margin: 22px 0 0; max-width: 34rem; color: var(--ink-2); font-size: 1.0625rem; }
+.paper { padding: 120px 0; }
+.paper-copy p { margin: 22px 0 0; max-width: 40rem; color: var(--ink-2); font-size: 1.0625rem; }
 .paper-copy .btn { margin-top: 30px; }
 .term {
   margin: 0; padding: 26px 28px; border-radius: 22px; background: var(--ink); color: #e8eaee; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere;

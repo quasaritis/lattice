@@ -267,6 +267,15 @@ function renderOptions(): void {
       add(sizeControl(sizeKeyOf(id), (k) => setFontSize(id, sizeScale(kind)[k])));
     }
     if (optionsBar.childElementCount) add(el("span", "sep"));
+    if (kind !== "arrow") {
+      const turnBtn = el("button", "icon-btn");
+      turnBtn.type = "button";
+      turnBtn.innerHTML = icon("rotate");
+      turnBtn.setAttribute("aria-label", "Rotate 90° (Shift+R)");
+      turnBtn.title = "Rotate 90° (Shift+R). Drag the round handle to turn freely";
+      turnBtn.addEventListener("click", () => rotateBy(id, 90));
+      add(turnBtn);
+    }
     const del = el("button", "icon-btn");
     del.type = "button";
     del.innerHTML = icon("trash");
@@ -536,7 +545,8 @@ function createAt(kind: "note" | "text" | "rect" | "ellipse", x: number, y: numb
 type Gesture =
   | { kind: "pan"; sx: number; sy: number; cx: number; cy: number }
   | { kind: "move"; id: string; dx: number; dy: number; start: Geom; x: number; y: number; moved: boolean; last: number; wasSelected: boolean }
-  | { kind: "resize"; id: string; x0: number; y0: number; start: Geom; w: number; h: number; last: number }
+  | { kind: "resize"; id: string; c: string; start: Geom; g: Geom; last: number }
+  | { kind: "rotate"; id: string; start: number; cx: number; cy: number; r: number; last: number }
   | { kind: "draw"; id: string; brush: Brush; color: string; pts: Pt[]; pressure: boolean; last: number; raf: number }
   | { kind: "arrow"; id: string; a: { x: number; y: number }; b: { x: number; y: number } }
   | { kind: "erase"; erased: string[] }
@@ -619,10 +629,13 @@ canvas.addEventListener("pointerdown", (e) => {
     select(id);
     const g = view.geom(id);
     if (target.classList.contains("grip")) {
-      gesture = { kind: "resize", id, x0: p.x, y0: p.y, start: g, w: g.w, h: g.h, last: 0 };
+      gesture = { kind: "resize", id, c: target.dataset.c ?? "se", start: g, g: { ...g }, last: 0 };
       session.commit(doc.touchItem(id));
-    }
-    else gesture = { kind: "move", id, dx: p.x - g.x, dy: p.y - g.y, start: g, x: g.x, y: g.y, moved: false, last: 0, wasSelected };
+    } else if (target.classList.contains("rot")) {
+      gesture = { kind: "rotate", id, start: g.r ?? 0, cx: g.x + g.w / 2, cy: g.y + g.h / 2, r: g.r ?? 0, last: 0 };
+      canvas.classList.add("rotating");
+      session.commit(doc.touchItem(id));
+    } else gesture = { kind: "move", id, dx: p.x - g.x, dy: p.y - g.y, start: g, x: g.x, y: g.y, moved: false, last: 0, wasSelected };
     e.preventDefault();
     return;
   }
@@ -704,21 +717,32 @@ canvas.addEventListener("pointermove", (e) => {
     case "resize": {
       const node = view.nodes.get(g.id);
       if (!node) return;
-      const kind = view.kind(g.id);
-      let w = Math.max(kind === "ink" ? 8 : 60, Math.round(g.start.w + p.x - g.x0));
-      let h = Math.max(kind === "ink" ? 8 : 30, Math.round(g.start.h + p.y - g.y0));
-      if (kind === "image" || kind === "ink" || e.shiftKey) {
-        // keep the aspect ratio for pictures and drawings
-        const k = Math.max(w / g.start.w, h / g.start.h);
-        w = Math.round(g.start.w * k);
-        h = Math.round(g.start.h * k);
-      }
-      g.w = w;
-      g.h = h;
-      view.place(g.id, node, { ...g.start, w, h });
+      g.g = resized(view.kind(g.id), g.start, g.c, p, e.shiftKey);
+      view.place(g.id, node, g.g);
       if (now - g.last > 80) {
         g.last = now;
-        session.commit(doc.setProps(g.id, { w, h }));
+        session.commit(doc.setProps(g.id, { x: g.g.x, y: g.g.y, w: g.g.w, h: g.g.h }));
+      }
+      return;
+    }
+    case "rotate": {
+      const node = view.nodes.get(g.id);
+      if (!node) return;
+      // the handle sits above the item, so straight up is 0°
+      let r = (Math.atan2(p.y - g.cy, p.x - g.cx) * 180) / Math.PI + 90;
+      if (r > 180) r -= 360;
+      if (e.shiftKey) r = Math.round(r / 15) * 15;
+      else {
+        const snap = Math.round(r / 45) * 45; // settle onto square angles when close
+        if (Math.abs(r - snap) < 4) r = snap;
+      }
+      r = Math.round(r * 10) / 10;
+      if (r === -180) r = 180;
+      g.r = r;
+      view.place(g.id, node, { ...view.geom(g.id), r });
+      if (now - g.last > 80) {
+        g.last = now;
+        session.commit(doc.setProps(g.id, { r }));
       }
       return;
     }
@@ -764,10 +788,20 @@ function endPointer(e: PointerEvent): void {
       else if (g.wasSelected && e.type === "pointerup") startEditing(g.id); // second tap edits
       return;
     }
-    case "resize":
-      session.commit(doc.setProps(g.id, { w: g.w, h: g.h }));
-      pushStep({ undo: () => doc.setProps(g.id, { w: g.start.w, h: g.start.h }), redo: () => doc.setProps(g.id, { w: g.w, h: g.h }) });
+    case "resize": {
+      const { x, y, w, h } = g.g;
+      const s0 = g.start;
+      session.commit(doc.setProps(g.id, { x, y, w, h }));
+      pushStep({ undo: () => doc.setProps(g.id, { x: s0.x, y: s0.y, w: s0.w, h: s0.h }), redo: () => doc.setProps(g.id, { x, y, w, h }) });
       return;
+    }
+    case "rotate": {
+      canvas.classList.remove("rotating");
+      const { r, start } = g;
+      session.commit(doc.setProps(g.id, { r }));
+      if (r !== start) pushStep({ undo: () => doc.setProps(g.id, { r: start }), redo: () => doc.setProps(g.id, { r }) });
+      return;
+    }
   }
 }
 canvas.addEventListener("pointerup", endPointer);
@@ -777,6 +811,52 @@ canvas.addEventListener("pointercancel", (e) => {
   canvas.classList.remove("panning");
 });
 
+/** A world point in an item's own frame: origin at its top-left corner, before rotation. */
+function toLocal(g: Geom, x: number, y: number): { x: number; y: number } {
+  const a = (-(g.r ?? 0) * Math.PI) / 180;
+  const cx = g.x + g.w / 2, cy = g.y + g.h / 2;
+  const dx = x - cx, dy = y - cy;
+  return { x: dx * Math.cos(a) - dy * Math.sin(a) + g.w / 2, y: dx * Math.sin(a) + dy * Math.cos(a) + g.h / 2 };
+}
+
+/**
+ * Resize from a corner of a possibly rotated item: the opposite corner stays put on screen,
+ * the dragged corner follows the pointer. Pictures and drawings keep their shape (Shift for all).
+ */
+function resized(kind: string, s: Geom, corner: string, p: { x: number; y: number }, keepAspect: boolean): Geom {
+  const r = s.r ?? 0;
+  const a = (r * Math.PI) / 180, cos = Math.cos(a), sin = Math.sin(a);
+  const sx = corner.includes("e") ? 1 : -1, sy = corner.includes("s") ? 1 : -1;
+  const rot = (x: number, y: number) => ({ x: x * cos - y * sin, y: x * sin + y * cos });
+  const c0 = { x: s.x + s.w / 2, y: s.y + s.h / 2 };
+  const off = rot((-sx * s.w) / 2, (-sy * s.h) / 2);
+  const anchor = { x: c0.x + off.x, y: c0.y + off.y };
+  // pointer relative to the fixed corner, in the item's frame
+  const dx = p.x - anchor.x, dy = p.y - anchor.y;
+  const lx = dx * cos + dy * sin, ly = -dx * sin + dy * cos;
+  const minW = kind === "ink" ? 8 : kind === "text" ? 40 : 60, minH = kind === "ink" ? 8 : 30;
+  let w = Math.max(minW, lx * sx), h = Math.max(minH, ly * sy);
+  if (kind === "image" || kind === "ink" || keepAspect) {
+    const k = Math.max(w / s.w, h / s.h, minW / s.w, minH / s.h);
+    w = s.w * k;
+    h = s.h * k;
+  }
+  w = Math.round(w);
+  h = Math.round(h);
+  const half = rot((sx * w) / 2, (sy * h) / 2);
+  const cx = anchor.x + half.x, cy = anchor.y + half.y;
+  return { x: Math.round(cx - w / 2), y: Math.round(cy - h / 2), w, h, r };
+}
+
+/** Turn the selected item a quarter turn. */
+function rotateBy(id: string, deg: number): void {
+  const r0 = view.geom(id).r ?? 0;
+  let r = Math.round(r0 + deg) % 360;
+  if (r > 180) r -= 360;
+  if (r <= -180) r += 360;
+  setProps(id, { r });
+}
+
 function eraseAt(x: number, y: number): void {
   if (gesture?.kind !== "erase") return;
   const tol = 10 / cam.z;
@@ -784,13 +864,14 @@ function eraseAt(x: number, y: number): void {
     const kind = node.dataset.kind;
     if (kind !== "ink" && kind !== "arrow") continue;
     const g = view.geom(id);
-    if (x < g.x - tol || y < g.y - tol || x > g.x + g.w + tol || y > g.y + g.h + tol) continue;
+    const l = toLocal(g, x, y); // the eraser works in the stroke's own (unrotated) frame
+    if (l.x < -tol || l.y < -tol || l.x > g.w + tol || l.y > g.h + tol) continue;
     const s = decodeStroke(String(doc.prop(id, "d") ?? ""));
     if (!s) continue;
     const sx = s.w / g.w, sy = s.h / g.h;
     const brush = String(doc.prop(id, "brush") ?? "pen") as Brush;
     const reach = (BRUSH_SIZE[brush] ?? 3) / 2 + tol;
-    if (distanceToPolyline(s.pts, (x - g.x) * sx, (y - g.y) * sy) <= reach * Math.max(sx, sy)) {
+    if (distanceToPolyline(s.pts, l.x * sx, l.y * sy) <= reach * Math.max(sx, sy)) {
       gesture.erased.push(id);
       session.commit(doc.deleteItem(id));
     }
@@ -836,6 +917,7 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
+  if (e.shiftKey && k === "r" && selected && view.kind(selected) !== "arrow") return rotateBy(selected, 90);
   const t = TOOLS.find((x) => x.key.toLowerCase() === k);
   if (t) return setTool(t.id);
   if ((k === "delete" || k === "backspace") && selected) return deleteItems([selected]);
@@ -1080,7 +1162,8 @@ function renderStats(s: SyncStats): void {
     fp.classList.add("flash");
   }
   $("syncInfo").textContent = `log #${s.lastSeq}${s.unsent ? ` · ${s.unsent} unsent` : ""}${s.pending ? ` · ${s.pending} waiting` : ""}`;
-  schedulePreview();
+  // only a change to the board restarts the countdown; sync ticks alone must not keep pushing it back
+  if (prev !== s.hash) schedulePreview();
 }
 
 offlineBtn.addEventListener("click", () => {
@@ -1142,7 +1225,10 @@ function savePreview(): void {
   const svg = boardPreview(doc);
   if (!svg) return;
   previewHash = lastStats.hash;
-  api.setPreview(boardId, svg).catch(() => (previewHash = ""));
+  api
+    .setPreview(boardId, svg)
+    .then(() => api.indexBoard(boardId))
+    .catch(() => (previewHash = ""));
 }
 
 // ================================================================== boot

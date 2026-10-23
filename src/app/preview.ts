@@ -6,20 +6,29 @@
 import type { Doc } from "../crdt/doc.js";
 import { BRUSH_SIZE, arrowPath, centerPath, decodeStroke, outlinePath, simplify, type Brush } from "../draw/stroke.js";
 import { inkHex, paperHex } from "./palette.js";
-import { num } from "./view.js";
+import { num, outerBox } from "./view.js";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/** Group an item's shapes and turn them around its centre. */
+function turn(parts: string[], from: number, g: { x: number; y: number; w: number; h: number; r: number }, x0: number, y0: number): void {
+  if (!g.r || parts.length <= from) return;
+  const cx = Math.round(g.x - x0 + g.w / 2), cy = Math.round(g.y - y0 + g.h / 2);
+  const inner = parts.splice(from).join("");
+  parts.push(`<g transform="rotate(${Math.round(g.r * 10) / 10} ${cx} ${cy})">${inner}</g>`);
+}
 
 export function boardPreview(doc: Doc, maxBytes = 55000): string | null {
   const ids = doc.itemIds().sort((a, b) => num(doc.prop(a, "z"), 0) - num(doc.prop(b, "z"), 0));
   if (!ids.length) return null;
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  const geo = new Map<string, { x: number; y: number; w: number; h: number }>();
+  const geo = new Map<string, { x: number; y: number; w: number; h: number; r: number }>();
   for (const id of ids) {
-    const g = { x: num(doc.prop(id, "x"), 0), y: num(doc.prop(id, "y"), 0), w: Math.max(4, num(doc.prop(id, "w"), 200)), h: Math.max(4, num(doc.prop(id, "h"), 150)) };
+    const g = { x: num(doc.prop(id, "x"), 0), y: num(doc.prop(id, "y"), 0), w: Math.max(4, num(doc.prop(id, "w"), 200)), h: Math.max(4, num(doc.prop(id, "h"), 150)), r: doc.prop(id, "kind") === "arrow" ? 0 : num(doc.prop(id, "r"), 0) };
     geo.set(id, g);
-    x0 = Math.min(x0, g.x); y0 = Math.min(y0, g.y);
-    x1 = Math.max(x1, g.x + g.w); y1 = Math.max(y1, g.y + g.h);
+    const o = outerBox(g);
+    x0 = Math.min(x0, o.x); y0 = Math.min(y0, o.y);
+    x1 = Math.max(x1, o.x + o.w); y1 = Math.max(y1, o.y + o.h);
   }
   const pad = 40;
   x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
@@ -38,6 +47,7 @@ export function boardPreview(doc: Doc, maxBytes = 55000): string | null {
   const parts: string[] = [];
   for (const id of ids) {
     const g = geo.get(id)!;
+    const before = parts.length;
     const kind = String(doc.prop(id, "kind") ?? "note");
     const color = doc.prop(id, "color");
     const X = r(g.x - x0), Y = r(g.y - y0);
@@ -52,10 +62,12 @@ export function boardPreview(doc: Doc, maxBytes = 55000): string | null {
       if (kind === "arrow") parts.push(`<path transform="${tf}" d="${arrowPath(pts[0], pts[pts.length - 1], 3)}" fill="none" stroke="${hex}" stroke-width="3" stroke-linecap="round"/>`);
       else if (brush === "hl") parts.push(`<path transform="${tf}" d="${centerPath(pts)}" fill="none" stroke="${hex}" stroke-opacity=".38" stroke-width="${BRUSH_SIZE.hl}" stroke-linecap="round"/>`);
       else parts.push(`<path transform="${tf}" d="${outlinePath(pts, BRUSH_SIZE[brush], true)}" fill="${hex}"/>`);
+      turn(parts, before, g, x0, y0);
       continue;
     }
     if (kind === "image") {
-      parts.push(`<rect x="${X}" y="${Y}" width="${r(g.w)}" height="${r(g.h)}" rx="6" fill="#d9dee3"/><path d="M${X + g.w * 0.2} ${Y + g.h * 0.75}l${g.w * 0.22} -${g.h * 0.3} ${g.w * 0.16} ${g.h * 0.18} ${g.w * 0.12} -${g.h * 0.1} ${g.w * 0.1} ${g.h * 0.22}z" fill="#b4bcc5"/>`);
+      parts.push(`<rect x="${X}" y="${Y}" width="${r(g.w)}" height="${r(g.h)}" rx="6" fill="#d9dee3"/><path d="M${r(X + g.w * 0.2)} ${r(Y + g.h * 0.75)}l${r(g.w * 0.22)} -${r(g.h * 0.3)} ${r(g.w * 0.16)} ${r(g.h * 0.18)} ${r(g.w * 0.12)} -${r(g.h * 0.1)} ${r(g.w * 0.1)} ${r(g.h * 0.22)}z" fill="#b4bcc5"/>`);
+      turn(parts, before, g, x0, y0);
       continue;
     }
     if (kind === "note") parts.push(`<rect x="${X}" y="${Y}" width="${r(g.w)}" height="${r(g.h)}" rx="3" fill="${paperHex(color)}"/>`);
@@ -73,6 +85,7 @@ export function boardPreview(doc: Doc, maxBytes = 55000): string | null {
         parts.push(`<path d="M${r(lx)} ${r(top + i * lh)}h${r(len)}" stroke="${kind === "text" ? inkHex(color ?? "ink") : "#17191e"}" stroke-opacity=".55" stroke-width="7" stroke-linecap="round"/>`);
       }
     }
+    turn(parts, before, g, x0, y0);
   }
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${r(w)} ${r(h)}"><title>${esc("Board preview")}</title><rect width="100%" height="100%" fill="#f8fafb"/>${parts.join("")}</svg>`;
   if (svg.length > maxBytes) {

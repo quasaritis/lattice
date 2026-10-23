@@ -225,6 +225,9 @@ test("Fields: images only point at board storage paths, strokes only carry numbe
   assert.equal(isFieldValue("fs", 40), true);
   assert.equal(isFieldValue("fs", 2), false);
   assert.equal(isFieldValue("fs", "40px"), false);
+  assert.equal(isFieldValue("r", -32.5), true);
+  assert.equal(isFieldValue("r", 720), false);
+  assert.equal(isFieldValue("r", "90deg"), false);
   assert.equal(isFieldValue("kind", "iframe"), false);
   assert.equal(isFieldValue("color", "url(javascript:x)"), false);
   assert.equal(isFieldValue("brush", "hl"), true);

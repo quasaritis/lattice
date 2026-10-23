@@ -22,6 +22,7 @@ export const ICON = {
   wifi: wrap(`<path d="M2.8 8.8a13.2 13.2 0 0 1 18.4 0"/><path d="M5.9 12.2a8.6 8.6 0 0 1 12.2 0"/><path d="M9 15.5a4.2 4.2 0 0 1 6 0"/><circle cx="12" cy="18.8" r=".9" fill="currentColor"/>`),
   wifiOff: wrap(`<path d="m3.5 3.5 17 17"/><path d="M9 15.5a4.2 4.2 0 0 1 6 0"/><path d="M5.9 12.2a8.6 8.6 0 0 1 3.5-2.1"/><path d="M2.8 8.8a13.3 13.3 0 0 1 3.4-2.4"/><path d="M14.6 10.1a8.6 8.6 0 0 1 3.5 2.1"/><path d="M11 5.5a13.2 13.2 0 0 1 10.2 3.3"/><circle cx="12" cy="18.8" r=".9" fill="currentColor"/>`),
   trash: wrap(`<path d="M4.5 7h15"/><path d="M9.5 7V4.8h5V7"/><path d="m6.6 7 .9 12.6c.1.8.7 1.4 1.5 1.4h6c.8 0 1.4-.6 1.5-1.4L17.4 7"/>`),
+  rotate: wrap(`<path d="M19.2 12.6A7.2 7.2 0 1 1 16.9 6.8"/><path d="M17.6 3.2v3.9h-3.9"/><rect x="9.4" y="9.6" width="5.2" height="5.2" rx="1"/>`),
   plus: wrap(`<path d="M12 5v14M5 12h14"/>`),
   minus: wrap(`<path d="M5 12h14"/>`),
   fit: wrap(`<path d="M4.5 9V4.5H9"/><path d="M15 4.5h4.5V9"/><path d="M19.5 15v4.5H15"/><path d="M9 19.5H4.5V15"/>`),

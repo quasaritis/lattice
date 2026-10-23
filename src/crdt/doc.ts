@@ -2,7 +2,7 @@
  * A Lattice board document: the three CRDTs from the paper composed together.
  *
  *   items  OR-Set     which notes and shapes exist (add-wins on concurrent delete)
- *   props  LWW-Map    "<item>/<field>" -> value: position, size, colour, kind, z-order
+ *   props  LWW-Map    "<item>/<field>" -> value: position, size, rotation, colour, kind, z-order
  *   texts  RGA        one sequence per note for its text
  *
  * It works both ways the paper describes:
@@ -38,7 +38,7 @@ export interface Change {
 export type Listener = (change: Change, source: "local" | "remote") => void;
 
 export const MAX_TEXT = 2000;
-export const ITEM_FIELDS = ["kind", "x", "y", "w", "h", "color", "z", "src", "d", "brush", "fs"] as const;
+export const ITEM_FIELDS = ["kind", "x", "y", "w", "h", "color", "z", "src", "d", "brush", "fs", "r"] as const;
 export const ITEM_KINDS = ["note", "rect", "ellipse", "text", "image", "ink", "arrow"] as const;
 export const BRUSHES = ["pen", "marker", "hl"] as const;
 /** Longest stroke we accept, in characters of encoded points (see draw/stroke.ts). */
@@ -356,6 +356,8 @@ export function isFieldValue(field: string, v: unknown): boolean {
       return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1e5;
     case "fs":
       return typeof v === "number" && Number.isFinite(v) && v >= 8 && v <= 240;
+    case "r": // rotation in degrees
+      return typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= 360;
     case "kind":
       return typeof v === "string" && (ITEM_KINDS as readonly string[]).includes(v);
     case "brush":
