@@ -142,8 +142,11 @@ const f = (n: number) => Math.round(n * 100) / 100;
  * Filled outline for a pen or marker stroke. `size` is the full width at pressure 1.
  * `simulatePressure` thins fast strokes when the device gives no pressure (mouse, finger).
  */
-export function outlinePath(input: Pt[], size: number, simulatePressure: boolean): string {
-  if (!input.length) return "";
+export function outlinePath(raw: Pt[], size: number, simulatePressure: boolean): string {
+  if (!raw.length) return "";
+  // simplified strokes keep only their corners; refill long segments so the smoothing below
+  // rounds a corner a little instead of cutting across it
+  const input = densify(raw);
   // streamline: follow the pointer a little lazily, which removes hand jitter
   const pts: Pt[] = [{ ...input[0] }];
   for (let i = 1; i < input.length; i++) {
@@ -217,8 +220,23 @@ function smoothThrough(pts: { x: number; y: number }[]): string {
 }
 
 /** Centre-line path, used for the highlighter (stroked, not filled). */
-export function centerPath(pts: { x: number; y: number }[]): string {
-  if (!pts.length) return "";
+function densify<T extends { x: number; y: number; p?: number }>(raw: T[]): T[] {
+  const out: T[] = [raw[0]];
+  for (let i = 1; i < raw.length; i++) {
+    const a = raw[i - 1], b = raw[i];
+    const n = Math.min(64, Math.floor(Math.hypot(b.x - a.x, b.y - a.y) / 6));
+    for (let k = 1; k < n; k++) {
+      const t = k / n;
+      out.push({ ...b, x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, p: (a.p ?? 0.5) + ((b.p ?? 0.5) - (a.p ?? 0.5)) * t });
+    }
+    out.push(b);
+  }
+  return out;
+}
+
+export function centerPath(raw: { x: number; y: number }[]): string {
+  if (!raw.length) return "";
+  const pts = densify(raw);
   if (pts.length === 1) return `M${f(pts[0].x)},${f(pts[0].y)}l0.01,0`;
   return `M${f(pts[0].x)},${f(pts[0].y)}` + smoothThrough(pts);
 }
