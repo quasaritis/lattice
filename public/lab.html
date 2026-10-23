@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The split-brain lab · Lattice</title>
+<meta name="description" content="Three replicas of one board, a network you can cut, slow down and make lossy. Watch CRDTs converge anyway.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body class="site grain">
+<header class="nav">
+  <a class="brand" href="/" aria-label="Lattice home">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 4 28 16 16 28 4 16Z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M10 10 22 22M22 10 10 22" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="16" cy="4" r="2.6" fill="var(--accent)"/></svg>
+    <span>Lattice</span>
+  </a>
+  <nav class="nav-links" aria-label="Main">
+    <a href="/" >Home</a>
+    <a href="https://github.com/quasaritis/lattice">Code</a>
+    <button class="btn primary small js-new-board" type="button">Start a board</button>
+  </nav>
+</header>
+<main class="lab-page">
+  <div class="lab-intro">
+    <h1>The split-brain lab</h1>
+    <p>Three copies of one board, A, B and C, joined by a simulated network. Click a wire to cut it. Make the network slow and lossy. Edit different copies while they can't see each other. When you reconnect, every copy lands on the same text and the same fingerprint.</p>
+  </div>
+  <div id="lab"></div>
+  <section class="lab-notes" aria-labelledby="tryTitle">
+    <h2 id="tryTitle">Things to try</h2>
+    <ol>
+      <li><b>Same spot, same time.</b> Cut every wire, put the cursor at the end of the note in A and in C, and type different words. Reconnect. The words don't interleave letter by letter.</li>
+      <li><b>Delete vs. edit.</b> Isolate A. Throw random edits. Reconnect. Notes deleted in one copy but changed in another follow the paper's add-wins rule.</li>
+      <li><b>A terrible network.</b> Push lost and duplicated messages to 60% and latency to 3 seconds. Lost messages are resent, duplicates are ignored, and early arrivals wait for what they depend on. The copies still converge.</li>
+    </ol>
+    <p class="muted">The same simulator runs in the test suite, where it checks 3,000 random schedules per property on every build.</p>
+  </section>
+</main>
+<script type="module" src="/js/app/labpage.js"></script>
+</body>
+</html>
